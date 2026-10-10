@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 from decimal import ROUND_HALF_UP, Decimal
 
-from .policy import PROVISIONAL, SUBSTANTIVE_ROLES, fingerprint
+from .policy import PROVISIONAL, SUBSTANTIVE_ROLES, fingerprint, normalise
 
 GATE_TYPES_PRES = {"keynote", "plenary", "invited", "oral", "panel", "workshop", "poster"}
 LOCAL_TYPES_PRES = {"institutional", "outreach", "seminar"}
@@ -34,9 +34,17 @@ COUNT_FIELDS = ("sessions_chaired", "proposals_in_development", "unfunded_projec
 ROLLING_FIELDS = ("pubs_prior2", "grant_active_years_prior2", "pres_prior2")
 
 
+LIST_FIELDS = ("publications", "submissions", "awards", "active_projects", "presentations", "editorial")
+YES_NO_FIELDS = {"publications": ("peer_reviewed", "student_first", "counted_in_prior_year"),
+                 "submissions": ("competitive", "scored"),
+                 "awards": ("competitive", "scored", "counted_in_prior_year")}
+DOI_PREFIXES = ("https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/", "doi:")
+
+
 def _round1(x: float, cfg: dict) -> float:
     if cfg["rounding"] == "half_up":
-        return float(Decimal(repr(float(x))).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+        # Rounding to 9 places first removes binary noise: an exact 46.85 is held as 46.849999999999994.
+        return float(Decimal(repr(round(float(x), 9))).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
     return round(x, 1)
 
 
@@ -45,11 +53,16 @@ def _is_int(v) -> bool:
 
 
 def _is_num(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _known(value, table) -> bool:
+    return isinstance(value, (str, int)) and not isinstance(value, bool) and value in table
 
 
 def _label(item: dict, kind: str, i: int) -> str:
-    title = (item.get("title") or "").strip()
+    title = item.get("title")
+    title = title.strip() if isinstance(title, str) else ""
     return f"{kind} {i + 1}" + (f" ({title})" if title else "")
 
 
@@ -60,14 +73,47 @@ def _unique(seq: list[str]) -> list[str]:
 # ----------------------------------------------------------------------------------------
 # Validation (always run before scoring; any error stops the evaluation)
 # ----------------------------------------------------------------------------------------
-def validate(fac: dict, cfg: dict = PROVISIONAL) -> list[str]:
+def _structure_errors(fac) -> list[str]:
+    if not isinstance(fac, dict):
+        return ["The faculty record is not in the expected format."]
     errs = []
+    for key in LIST_FIELDS:
+        items = fac.get(key, [])
+        if not isinstance(items, list) or not all(isinstance(x, dict) for x in items):
+            errs.append(f"'{key}' must be a list of entries.")
+    if not isinstance(fac.get("grant_reviews", []), list):
+        errs.append("'grant_reviews' must be a list.")
+    if not isinstance(fac.get("rolling", {}), dict):
+        errs.append("'rolling' must hold the rolling-window figures.")
+    return errs
+
+
+def _entry_errors(item: dict, lab: str, yes_no: tuple) -> list[str]:
+    errs = []
+    for field in ("title", "doi"):
+        if item.get(field) is not None and not isinstance(item[field], str):
+            errs.append(f"{lab}: {field} must be text.")
+    if item.get("id") is not None and not (isinstance(item["id"], str) or _is_int(item["id"])):
+        errs.append(f"{lab}: id must be text or a whole number.")
+    for field in yes_no:
+        if field in item and not isinstance(item[field], bool):
+            errs.append(f"{lab}: '{field.replace('_', ' ')}' must be yes or no (true or false), "
+                        f"not {item[field]!r}.")
+    return errs
+
+
+def validate(fac: dict, cfg: dict = PROVISIONAL) -> list[str]:
+    errs = _structure_errors(fac)
+    if errs:
+        return errs
     effort = fac.get("research_effort", cfg["standard_research_effort"])
     if not _is_num(effort) or not 0 <= effort <= 100:
         errs.append("Research effort must be a number from 0 to 100 percent.")
     months = fac.get("months_active", 12)
     if not _is_num(months) or not 0 <= months <= 12:
         errs.append("Months active must be a number from 0 to 12.")
+    if not isinstance(fac.get("first_year", False), bool):
+        errs.append(f"'First year' must be yes or no (true or false), not {fac['first_year']!r}.")
     for name in COUNT_FIELDS:
         v = fac.get(name, 0)
         if not _is_int(v) or v < 0:
@@ -79,15 +125,16 @@ def validate(fac: dict, cfg: dict = PROVISIONAL) -> list[str]:
 
     for i, p in enumerate(fac.get("publications", [])):
         lab = _label(p, "Publication", i)
+        errs += _entry_errors(p, lab, YES_NO_FIELDS["publications"])
         t = p.get("type", "article")
         if not isinstance(t, str) or not t:
             errs.append(f"{lab}: publication type is missing.")
             continue
-        if t == "article" and p.get("peer_reviewed", True):
+        if t == "article" and p.get("peer_reviewed", True) is True:
             tier = p.get("tier")
-            if tier is not None and (not _is_int(tier) or tier not in cfg["journal_tier_mult"]):
+            if tier is not None and not (_is_int(tier) and tier in cfg["journal_tier_mult"]):
                 errs.append(f"{lab}: journal tier must be 1, 2, 3 or 0 (got {tier!r}).")
-        if t in ("article", "book") and p.get("role") is not None and p["role"] not in cfg["author_role_mult"]:
+        if t in ("article", "book") and p.get("role") is not None and not _known(p["role"], cfg["author_role_mult"]):
             errs.append(f"{lab}: author role {p['role']!r} is not recognised "
                         f"(use {', '.join(cfg['author_role_mult'])}).")
         impacts = p.get("documented_impacts", 0)
@@ -98,42 +145,49 @@ def validate(fac: dict, cfg: dict = PROVISIONAL) -> list[str]:
     for kind, key in (("Submission", "submissions"), ("Award", "awards")):
         for i, s in enumerate(fac.get(key, [])):
             lab = _label(s, kind, i)
+            errs += _entry_errors(s, lab, YES_NO_FIELDS[key])
             size = s.get("size")
-            if size not in cfg["submission_base"]:
+            sized = _known(size, cfg["submission_base"]) and _known(size, cfg["award_base"])
+            if not sized:
                 errs.append(f"{lab}: size band must be one of {', '.join(cfg['submission_base'])} (got {size!r}).")
-            if s.get("role") is not None and s["role"] not in cfg["grant_role_mult"]:
+            if s.get("role") is not None and not _known(s["role"], cfg["grant_role_mult"]):
                 errs.append(f"{lab}: role {s['role']!r} is not recognised.")
             amt = s.get("amount")
             if amt is not None:
                 if not _is_num(amt) or amt < 0:
                     errs.append(f"{lab}: amount must be a number, 0 or more.")
-                elif size in cfg["submission_base"] and size != "internal":
+                elif sized and size != "internal":
                     band = "minor" if amt < bands["minor_max"] else "major" if amt < bands["large_min"] else "large"
                     if size != band:
                         errs.append(f"{lab}: amount ${amt:,.0f} is inconsistent with size band '{size}' "
                                     f"(expected '{band}').")
     for i, p in enumerate(fac.get("active_projects", [])):
-        if p.get("role") is not None and p["role"] not in cfg["grant_role_mult"]:
-            errs.append(f"{_label(p, 'Active project', i)}: role {p['role']!r} is not recognised.")
+        lab = _label(p, "Active project", i)
+        errs += _entry_errors(p, lab, ())
+        if p.get("role") is not None and not _known(p["role"], cfg["grant_role_mult"]):
+            errs.append(f"{lab}: role {p['role']!r} is not recognised.")
     for r in fac.get("grant_reviews", []):
-        if r not in cfg["grant_review_units"]:
+        if not _known(r, cfg["grant_review_units"]):
             errs.append(f"Grant review type {r!r} is not recognised.")
     for i, e in enumerate(fac.get("editorial", [])):
-        if e.get("role") not in cfg["editorial_units"]:
+        if not _known(e.get("role"), cfg["editorial_units"]):
             errs.append(f"Editorial activity {i + 1}: role {e.get('role')!r} is not recognised.")
         n = e.get("n", 1)
         if not _is_int(n) or n < 0:
             errs.append(f"Editorial activity {i + 1}: count must be a whole number, 0 or more.")
     for i, p in enumerate(fac.get("presentations", [])):
         lab = _label(p, "Presentation", i)
+        errs += _entry_errors(p, lab, ())
         t = p.get("type")
-        if t not in cfg["pres_type_base"]:
+        if not _known(t, cfg["pres_type_base"]):
             errs.append(f"{lab}: presentation type {t!r} is not recognised.")
             continue
-        if p.get("role") is not None and p["role"] not in cfg["pres_role_mult"]:
+        if p.get("role") is not None and not _known(p["role"], cfg["pres_role_mult"]):
             errs.append(f"{lab}: role {p['role']!r} is not recognised.")
-        if t not in LOCAL_TYPES_PRES and p.get("venue") is not None and p["venue"] not in cfg["venue_tier_mult"]:
-            errs.append(f"{lab}: venue tier must be A, B, C or 0, entered as text (got {p['venue']!r}).")
+        venue = p.get("venue")
+        if t not in LOCAL_TYPES_PRES and venue is not None and not (isinstance(venue, str)
+                                                                    and venue in cfg["venue_tier_mult"]):
+            errs.append(f"{lab}: venue tier must be A, B, C or 0, entered as text (got {venue!r}).")
     return errs
 
 
@@ -156,28 +210,62 @@ def pub_benchmark_count(fac: float, first_year: bool, cfg: dict) -> int:
 # ----------------------------------------------------------------------------------------
 # Domain unit calculators
 # ----------------------------------------------------------------------------------------
+def _doi(item: dict, cfg: dict) -> str:
+    doi = (item.get("doi") or "").strip().lower()
+    if cfg["normalise_ids"]:
+        for prefix in DOI_PREFIXES:
+            if doi.startswith(prefix):
+                doi = doi[len(prefix):]
+    return doi
+
+
+def _prior_year(item: dict, cfg: dict) -> bool:
+    return bool(cfg["honour_prior_year_publications"] and item.get("counted_in_prior_year"))
+
+
+def _expected_units(item: dict, cfg: dict) -> float:
+    """Units an entry would earn on its own; used only to choose which copy of a duplicate DOI to keep."""
+    if _prior_year(item, cfg):
+        return -1.0
+    t, peer = item.get("type", "article"), item.get("peer_reviewed", True)
+    if t == "article" and peer:
+        tier = 3 if item.get("tier") is None else item["tier"]
+        return cfg["journal_tier_mult"][tier] * cfg["author_role_mult"][item.get("role") or "coauthor"]
+    if t == "book" and peer:
+        role = item.get("role") or cfg["missing_defaults"]["book_role"]
+        return cfg["book_units"] * (1.0 if role == "lead" else cfg["book_coauthor_mult"])
+    if t == "chapter" and peer:
+        return cfg["chapter_units"]
+    key = f"non_peer_reviewed_{t}" if t in ("article", "book", "chapter") else t
+    return cfg["other_output_units"].get(key, 0.0)
+
+
 def pub_units(fac: dict, cfg: dict) -> dict:
     count, units, chapters, other, editorial, impact, chapters_counted = 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0
-    flags, lines, seen_doi = [], [], set()
+    flags, lines = [], []
+    kept = {}
+    for i, it in enumerate(fac.get("publications", [])):
+        doi = _doi(it, cfg)
+        if doi and (doi not in kept or _expected_units(it, cfg) >
+                    _expected_units(fac["publications"][kept[doi]], cfg)):
+            kept[doi] = i
 
     def line(item, detail, u, minimum=0):
         lines.append({"domain": "P", "item": item, "detail": detail, "units": u, "toward_minimum": minimum})
 
     for i, it in enumerate(fac.get("publications", [])):
         lab = _label(it, "Publication", i)
-        if it.get("counted_in_prior_year"):
+        if _prior_year(it, cfg):
             flags.append(f"{lab} already credited in a prior year: excluded")
             line(lab, "Credited in a prior year; excluded", 0.0)
             continue
-        doi = (it.get("doi") or "").strip().lower()
-        if doi:
-            if doi in seen_doi:
-                if cfg["dedupe_doi"]:
-                    flags.append(f"{lab}: duplicate DOI {doi}; counted once")
-                    line(lab, "Duplicate DOI; not counted again", 0.0)
-                    continue
-                flags.append(f"{lab}: duplicate DOI {doi}; counted twice under this policy")
-            seen_doi.add(doi)
+        doi = _doi(it, cfg)
+        if doi and kept[doi] != i:
+            if cfg["dedupe_doi"]:
+                flags.append(f"{lab}: duplicate DOI {doi}; counted once")
+                line(lab, "Duplicate DOI; the entry with the most credit is the one counted", 0.0)
+                continue
+            flags.append(f"{lab}: duplicate DOI {doi}; counted twice under this policy")
         t = it.get("type", "article")
         peer = it.get("peer_reviewed", True)
         if t == "article":
@@ -189,11 +277,14 @@ def pub_units(fac: dict, cfg: dict) -> dict:
             tier = it.get("tier")
             if tier is None:
                 tier = 3
-                flags.append("Journal tier missing: defaulted to Tier 3 pending verification")
+                flags.append(f"{lab}: journal tier missing; treated as Tier 3 pending verification")
             if tier == 0:
                 line(lab, "Article in a venue classified questionable; not credited", 0.0)
                 continue
-            role = it.get("role", "coauthor")
+            role = it.get("role")
+            if role is None:
+                role = "coauthor"
+                flags.append(f"{lab}: author role missing; treated as coauthor pending verification")
             u = cfg["journal_tier_mult"][tier] * cfg["author_role_mult"][role]
             detail = f"Peer-reviewed article, Tier {tier}, {role} author"
             if it.get("student_first") and role == "lead":
@@ -203,7 +294,10 @@ def pub_units(fac: dict, cfg: dict) -> dict:
             count += 1
             line(lab, detail, u, 1)
         elif t == "book" and peer:
-            role = it.get("role", cfg["missing_defaults"]["book_role"])
+            role = it.get("role")
+            if role is None:
+                role = cfg["missing_defaults"]["book_role"]
+                flags.append(f"{lab}: author role missing; treated as {role} pending verification")
             u = cfg["book_units"] * (1.0 if role == "lead" else cfg["book_coauthor_mult"])
             units += u
             count += 2
@@ -271,19 +365,35 @@ def grant_units(fac: dict, cfg: dict) -> dict:
             flags.append(f"{lab}: role missing; treated as collaborator pending verification")
         return entry.get("role") or "collaborator"
 
-    awarded_ids = {a.get("id") for a in fac.get("awards", [])
-                   if a.get("id") and not a.get("counted_in_prior_year")}
+    def grant_id(entry):
+        """(id, whether the entry has one). Phase 1 compared raw ids and ignored falsy ones such as 0."""
+        key = entry.get("id")
+        if not cfg["normalise_ids"]:
+            return key, bool(key)
+        key = None if key is None else str(key).strip().lower()
+        return key, bool(key)
+
+    def meets_minimum(entry, role):
+        external = entry["size"] != "internal"
+        return (role in SUBSTANTIVE_ROLES and entry.get("competitive", True)
+                and (external or not cfg["grant_gate_requires_external"]))
+
+    awarded_ids = {grant_id(a)[0] for a in fac.get("awards", [])
+                   if grant_id(a)[1] and not a.get("counted_in_prior_year")}
     for i, s in enumerate(fac.get("submissions", [])):
         lab = _label(s, "Submission", i)
-        key = s.get("id")
-        if key and key in seen:
+        key, has_id = grant_id(s)
+        if has_id and key in seen:
             flags.append(f"Duplicate submission id {key}: counted once")
             line(lab, "Duplicate submission id; not counted again", 0.0)
             continue
         seen.add(key)
-        if cfg["dedupe_submission_award"] and key and key in awarded_ids:
+        if cfg["dedupe_submission_award"] and has_id and key in awarded_ids:
+            # The proposal earns its units through the award, but submitting it still shows grant seeking.
+            met = meets_minimum(s, s.get("role") or "collaborator")
+            gate = gate or met
             flags.append(f"{lab}: funded in the same year; credited as an award only")
-            line(lab, "Funded in the same year; credited under the award", 0.0)
+            line(lab, "Funded in the same year; credited under the award", 0.0, 1 if met else 0)
             continue
         role = role_of(s, lab)
         base = cfg["submission_base"][s["size"]]
@@ -295,8 +405,7 @@ def grant_units(fac: dict, cfg: dict) -> dict:
             u += cfg["scored_bonus"] * mult
             detail += ", scored"
         sub_units += u
-        external = s["size"] != "internal"
-        meets = role in SUBSTANTIVE_ROLES and comp and (external or not cfg["grant_gate_requires_external"])
+        meets = meets_minimum(s, role)
         if meets:
             gate = True
         else:
@@ -330,11 +439,16 @@ def grant_units(fac: dict, cfg: dict) -> dict:
     units += min(sub_units, cfg["submission_cap"])
     impl = 0.0
     for i, p in enumerate(fac.get("active_projects", [])):
+        lab = _label(p, "Active project", i)
         if p.get("role") in SUBSTANTIVE_ROLES:
             impl += cfg["implementation_units"]
             gate = True
-            line(_label(p, "Active project", i), f"Implementing a funded project as {p['role']}",
-                 cfg["implementation_units"], 1)
+            line(lab, f"Implementing a funded project as {p['role']}", cfg["implementation_units"], 1)
+        elif p.get("role") is None:
+            flags.append(f"{lab}: role missing; no credit pending verification")
+            line(lab, "Role not yet verified; no credit", 0.0)
+        else:
+            line(lab, f"Role on the funded project is {p['role']}; no implementation credit", 0.0)
     if impl > cfg["implementation_cap"]:
         line("Cap: Active projects", f"Credit limited to {cfg['implementation_cap']:g} units (earned {impl:g})",
              cfg["implementation_cap"] - impl)
@@ -425,9 +539,10 @@ def domain_score(weight, anchor_fraction, units, benchmark_units, saturation, cf
 
 
 def _empty_result(fac: dict, cfg: dict, cls: str, errors=None, notes=None) -> dict:
+    info = fac if isinstance(fac, dict) else {}
     return {
-        "name": fac.get("name", ""), "faculty_id": fac.get("faculty_id", ""),
-        "evaluation_year": fac.get("evaluation_year", ""),
+        "name": info.get("name", ""), "faculty_id": info.get("faculty_id", ""),
+        "evaluation_year": info.get("evaluation_year", ""),
         "P": 0.0, "G": 0.0, "R": 0.0, "total": 0.0, "class": cls, "class_basis": "not_scored",
         "gates": {"P": False, "G": False, "R": False}, "gate_basis": {"P": "", "G": "", "R": ""},
         "factor": 0.0, "pub_benchmark": 0, "pub_count": 0, "units": {"P": 0.0, "G": 0.0, "R": 0.0},
@@ -440,7 +555,27 @@ def _empty_result(fac: dict, cfg: dict, cls: str, errors=None, notes=None) -> di
 # ----------------------------------------------------------------------------------------
 # Main evaluation
 # ----------------------------------------------------------------------------------------
+def _display_scores(raw: dict, cfg: dict) -> tuple[dict, float]:
+    """Round the overall score and the three domain scores for display.
+
+    The overall score is always the rounded true total. When the policy asks for the parts to add up, a part is
+    moved by 0.1 where needed, choosing the one whose own rounding was furthest in the other direction.
+    """
+    total = _round1(raw["P"] + raw["G"] + raw["R"], cfg)
+    shown = {k: _round1(v, cfg) for k, v in raw.items()}
+    if cfg["total_from_rounded_parts"]:
+        gap = round((total - (shown["P"] + shown["G"] + shown["R"])) * 10)
+        while gap:
+            step = 1 if gap > 0 else -1
+            k = max(raw, key=lambda d: (raw[d] - shown[d]) * step)
+            shown[k] = round(shown[k] + 0.1 * step, 1)
+            gap -= step
+    return shown, total
+
+
 def evaluate(fac: dict, cfg: dict = PROVISIONAL) -> dict:
+    if any(not isinstance(k, int) for k in cfg["journal_tier_mult"]):
+        cfg = normalise(cfg)
     errors = validate(fac, cfg)
     if errors:
         return _empty_result(fac, cfg, INCOMPLETE, errors=errors)
@@ -538,8 +673,8 @@ def evaluate(fac: dict, cfg: dict = PROVISIONAL) -> dict:
     R, R_anc, R_exc = domain_score(W["R"], r_frac, ru["units"], cfg["benchmark_units"]["R"],
                                    cfg["saturation"]["R"] * sat_scale, cfg)
 
-    Pr, Gr, Rr = _round1(P, cfg), _round1(G, cfg), _round1(R, cfg)
-    total = _round1(Pr + Gr + Rr, cfg) if cfg["total_from_rounded_parts"] else _round1(P + G + R, cfg)
+    shown, total = _display_scores({"P": P, "G": G, "R": R}, cfg)
+    Pr, Gr, Rr = shown["P"], shown["G"], shown["R"]
     gates = {"P": pub_gate, "G": grant_gate, "R": pres_gate}
     shares = {k: (v / W[k] if W[k] else 0.0) for k, v in (("P", P), ("G", G), ("R", R))}
 
@@ -576,7 +711,7 @@ def evaluate(fac: dict, cfg: dict = PROVISIONAL) -> dict:
             flags.append("Committee review: score >= 70 but a required minimum is unmet"
                          if cfg["meets_threshold"] == 70 else
                          f"Committee review: score >= {cfg['meets_threshold']:g} but a required minimum is unmet")
-        elif any(shares[k] >= 0.9 for k in shares):
+        elif any(shares[k] >= cfg["distinguished_level"] for k in shares):
             flags.append("Committee review: distinguished performance in one domain with a required minimum unmet")
         elif approaching:
             flags.append(f"Committee review: one required minimum is unmet and the score is at or above "
@@ -619,15 +754,12 @@ def evaluate(fac: dict, cfg: dict = PROVISIONAL) -> dict:
 
 
 def report(res: dict, cfg: dict = PROVISIONAL) -> str:
-    W = cfg["weights"]
     head = f"Faculty research evaluation: {res['name']}"
     if not res["scored"]:
         return "\n".join([head, f"Research evaluation: {res['class']}"] +
                          ["- " + m for m in res["errors"] + res["notes"]])
     lines = [head, "| Component | Score |", "|---|---:|",
-             f"| Publications | {res['P']}/{W['P']:.0f} |",
-             f"| Grants and contracts | {res['G']}/{W['G']:.0f} |",
-             f"| Presentations | {res['R']}/{W['R']:.0f} |",
+             *(f"| {d['name']} | {d['score']}/{d['max']:g} |" for d in res["domains"].values()),
              f"| Overall research score | {res['total']}/100 |",
              f"| Research evaluation | {res['class']} |"]
     names = {"P": "Publications", "G": "Grants", "R": "Presentations"}

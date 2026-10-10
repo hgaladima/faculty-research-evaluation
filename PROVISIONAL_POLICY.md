@@ -8,7 +8,7 @@ Finding numbers (for example 2.5) refer to `REVIEW_FINDINGS.md`.
 
 ## 1. What changed, in brief
 
-Eighteen rules differ from Phase 1. The model itself is unchanged: three domains weighted 50 / 35 / 15, 70% of a domain's points for meeting its minimum, and the same unit values.
+Nineteen rules differ from Phase 1. The model itself is unchanged: three domains weighted 50 / 35 / 15, 70% of a domain's points for meeting its minimum, and the same unit values.
 
 Under the provisional policy the 22 test profiles classify as 2 Exceeds, 15 Meets and 5 Does Not Meet (Phase 1: 5, 13 and 4). Four profiles change class; section 5 explains each.
 
@@ -57,8 +57,9 @@ Each row is a setting on the Scoring policy tab.
 
 | Finding | Provisional rule | Phase 1 | Basis |
 |---|---|---|---|
-| 4.1 | A proposal funded in the year it was submitted is credited as an award only | Credited twice | Phase 1 brief: avoid double counting |
-| 4.2 | A DOI entered twice counts once | Counted twice | As above |
+| 4.1 | A proposal funded in the year it was submitted earns its credit as an award only. Submitting it still counts toward the grant minimum | Credited twice | Phase 1 brief: avoid double counting |
+| 4.2 | A DOI entered twice counts once; the entry that earns the most credit is the one kept, whatever the order | Counted twice | As above |
+| 4.2 | DOIs and grant ids are matched ignoring capital letters, spaces and web-address prefixes such as `https://doi.org/` | Compared exactly as typed | Judgement: the same item typed two ways is still one item |
 | 4.3 | A publication can be marked "credited in a prior year" and is then excluded | No guard | As above. An item counts in the year it first appears, online or in print |
 | 4.6 | Book-chapter credit is capped at 2.25 units (three chapters) | No cap | Judgement: Boise State treats two chapters as one item |
 | 4.6, 5 | Published abstracts earn 0.2 units; non-peer-reviewed books 1.0 and chapters 0.4; all inside the existing cap of 2.0 on other outputs. Any unrecognised type is flagged | Zero, silently | Working Group lists published abstracts. Handbook B.1 grades books by publisher and review |
@@ -69,7 +70,7 @@ Each row is a setting on the Scoring policy tab.
 | Finding | Provisional rule | Phase 1 | Basis |
 |---|---|---|---|
 | 6.5 | Anything not yet verified is treated the least generous way and flagged: journal Tier 3, venue Tier C, presentation role coauthor, book role coauthor, grant role collaborator | Mixed: some defaults generous, most unflagged | Consistency |
-| 6.6 | Scores round half up, and the overall score is the sum of the three displayed domain scores | Rounded separately, so parts did not always add up | Matches Excel; the report must add up |
+| 6.6 | Scores round half up. The overall score is the rounded true total; where the three displayed domain scores would not add up to it, one of them is shown 0.1 higher or lower | Rounded separately, so parts did not always add up | Half-up is the rule Excel's ROUND uses; the report must add up, and meeting every minimum must show exactly 70 under any weights |
 
 ## 4. Definitions applied
 
@@ -107,10 +108,10 @@ These are written into the app's help text. They are proposals.
 |---|---|---|---|
 | S2 High publications, limited grants | 86.1 Exceeds | 86.1 Meets | Only Publications is at 80% or more (Grants 70%, Presentations 78%) |
 | S9 Co-I on several large grants | 80.2 Meets | 75.0 Does Not Meet | The only presentation is a poster as non-presenting coauthor, so the presentation minimum is unmet. Flagged "approaching" |
-| S12 Strong research mentorship | 85.3 Exceeds | 85.4 Meets | Only Publications is at 80% or more |
-| S14 Policy-impact research | 88.0 Exceeds | 87.9 Meets | Only Publications is at 80% or more (Grants 78%) |
+| S12 Strong research mentorship | 85.3 Exceeds | 85.3 Meets | Only Publications is at 80% or more |
+| S14 Policy-impact research | 88.0 Exceeds | 88.0 Meets | Only Publications is at 80% or more (Grants 78%) |
 
-The other 18 keep their class. Three scores move by 0.1 because of the rounding rule.
+The other 18 keep their class. Rounding half up moves one overall score by 0.1 (S4, from 83.3 to 83.4). In S4, S12 and S14 one displayed domain score is shifted by 0.1 so that the three add up to the overall score.
 
 S14 shows the cost of the two-domain rule: a strong publication year with a funded major award as PI falls just short. Lowering the "strong domain" level from 80% to 75% would return S14 to Exceeds. That is a committee call.
 
@@ -141,7 +142,7 @@ S14 shows the cost of the two-domain rule: a strong publication year with a fund
 
 Generated from the shipped provisional policy. Units are converted to points as described in the app's Guide tab.
 
-Policy: Provisional 2026 (pending committee approval). Fingerprint `1a0605fd5b`. Phase 1 fingerprint `56d1b17ebd`.
+Policy: Provisional 2026 (pending committee approval). Fingerprint `690a203737`. Phase 1 fingerprint `eb1fdc3343`.
 
 ### Weights and classification
 
@@ -159,6 +160,7 @@ Policy: Provisional 2026 (pending committee approval). Fingerprint `1a0605fd5b`.
 | Floor score for the large-award route to Exceeds | 80 | 0 |
 | Flag as 'approaching' at this score when one minimum is unmet | 60 | same |
 | A domain shows 'Exceeds' at this share of its points (0-1) | 0.85 | same |
+| With a minimum unmet, flag a domain at this share of its points (0-1) | 0.9 | same |
 
 ### Minimum expectations
 
@@ -188,10 +190,12 @@ Policy: Provisional 2026 (pending committee approval). Fingerprint `1a0605fd5b`.
 |---|---|---|
 | Count a publication once when the same DOI is entered twice | Yes | No |
 | Credit a proposal funded in the same year as an award only | Yes | No |
+| Exclude a publication marked as credited in a prior year | Yes | No |
+| Match DOIs and grant ids ignoring case, spaces and web-address prefixes | Yes | No |
 | Awards below this amount are 'minor' ($) | 10000 | same |
 | Awards at or above this amount are 'large' ($) | 250000 | same |
 | Rounding of displayed scores | Round half up (matches Excel) | Round half to even (Python default) |
-| Overall score is the sum of the displayed domain scores | Yes | No |
+| Adjust a displayed domain score by 0.1 where needed so they add up | Yes | No |
 | Venue tier assumed when not yet verified | C | B |
 | Presentation role assumed when missing | coauthor | presenter |
 | Book author role assumed when missing | coauthor | lead |

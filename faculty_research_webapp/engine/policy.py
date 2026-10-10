@@ -41,6 +41,7 @@ LEGACY = {
     "breadth_level": 0.80,
     "distinction_min_total": 0.0,
     "domain_exceeds_level": 0.85,
+    "distinguished_level": 0.90,
     # ---- Adjustments ----
     "standard_research_effort": 40.0,
     "factor_min": 0.25,
@@ -72,6 +73,8 @@ LEGACY = {
     "impact_units": 0.5,
     "impact_cap": 1.0,
     "dedupe_doi": False,
+    "honour_prior_year_publications": False,
+    "normalise_ids": False,
     # ---- Grants ----
     "amount_bands": {"minor_max": 10_000, "large_min": 250_000},
     "submission_base": {"internal": 0.4, "minor": 0.5, "major": 1.0, "large": 1.5},
@@ -120,6 +123,8 @@ def _provisional() -> dict:
         "pres_gate_roles": ["presenter", "mentor"],
         "chapter_cap": 2.25,
         "dedupe_doi": True,
+        "honour_prior_year_publications": True,
+        "normalise_ids": True,
         "dedupe_submission_award": True,
         "missing_defaults": {"venue": "C", "pres_role": "coauthor", "book_role": "coauthor"},
         "rounding": "half_up",
@@ -135,35 +140,78 @@ PROVISIONAL = _provisional()
 PRESETS = {"Provisional 2026": PROVISIONAL, "Phase 1 original": LEGACY}
 
 TIER_KEYS = [1, 2, 3, 0]
+SIZE_BANDS = {"internal", "minor", "major", "large"}
+REQUIRED_KEYS = {
+    "weights": {"P", "G", "R"}, "saturation": {"P", "G", "R"}, "benchmark_units": {"P", "G", "R"},
+    "amount_bands": {"minor_max", "large_min"}, "missing_defaults": {"venue", "pres_role", "book_role"},
+    "journal_tier_mult": set(TIER_KEYS), "author_role_mult": {"lead", "coauthor"},
+    "grant_role_mult": set(GRANT_ROLES), "pres_role_mult": set(PRES_ROLES),
+    "submission_base": SIZE_BANDS, "award_base": SIZE_BANDS, "venue_tier_mult": {"A", "B", "C", "0"},
+    "other_output_units": {"non_peer_reviewed_article"},
+}
+FIXED_KEY_TABLES = ("weights", "saturation", "benchmark_units", "amount_bands", "missing_defaults",
+                    "journal_tier_mult", "venue_tier_mult", "submission_base", "award_base")
+WHOLE_NUMBER_KEYS = ("pub_min_count", "rolling_max_domains")
+ROLE_LISTS = {"award_gate_roles": GRANT_ROLES, "pres_gate_roles": PRES_ROLES}
 
 
 def normalise(policy: dict) -> dict:
-    """Return a copy with journal-tier keys as ints (JSON turns them into strings)."""
-    p = copy.deepcopy(policy)
-    p["journal_tier_mult"] = {int(k): float(v) for k, v in p["journal_tier_mult"].items()}
+    """Canonical copy of a policy, so that equal behaviour means equal dicts.
+
+    Keeps known settings only, turns journal-tier keys into ints (JSON makes them strings), whole-number
+    settings into ints, and puts role lists in a standard order without repeats. Raises ValueError when the
+    input cannot be a policy.
+    """
+    if not isinstance(policy, dict):
+        raise ValueError("The policy is not in the expected format.")
+    p = {k: copy.deepcopy(v) for k, v in policy.items() if k in LEGACY}
+    if isinstance(p.get("journal_tier_mult"), dict):
+        tiers = {}
+        for key, value in p["journal_tier_mult"].items():
+            try:
+                tier = int(key)
+            except (TypeError, ValueError):
+                raise ValueError(f"Journal tier {key!r} is not a number.") from None
+            if tier in tiers:
+                raise ValueError(f"Journal tier {tier} is given more than once.")
+            tiers[tier] = value
+        p["journal_tier_mult"] = tiers
+    for key in WHOLE_NUMBER_KEYS:
+        if isinstance(p.get(key), float) and p[key].is_integer():
+            p[key] = int(p[key])
+    for key, order in ROLE_LISTS.items():
+        roles = p.get(key)
+        if isinstance(roles, list) and all(isinstance(r, str) for r in roles):
+            p[key] = [r for r in order if r in roles] + sorted(set(roles) - set(order))
     return p
 
 
 def to_json(policy: dict) -> str:
-    return json.dumps(policy, indent=2, sort_keys=True, default=str)
+    return json.dumps(policy, indent=2, sort_keys=True)
 
 
 def from_json(text: str) -> dict:
     return normalise(json.loads(text))
 
 
-def fingerprint(policy: dict) -> str:
-    """Short, stable identifier of the settings; printed on every report."""
-    def canon(v):
-        if isinstance(v, dict):
-            return {str(k): canon(x) for k, x in v.items()}
-        if isinstance(v, list):
-            return [canon(x) for x in v]
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            return float(v)
-        return v
+def _canon(v):
+    """Type-aware canonical form: 10000 and 10000.0 are equal, True and 1 are not."""
+    if isinstance(v, dict):
+        return {str(k): _canon(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_canon(x) for x in v]
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    return v
 
-    canonical = json.dumps(canon(normalise(policy)), sort_keys=True, default=str)
+
+def fingerprint(policy: dict) -> str:
+    """Short, stable identifier of the scoring settings; printed on every report.
+
+    The policy name is not part of it: two policies that score identically share a fingerprint.
+    """
+    settings = {k: v for k, v in normalise(policy).items() if k != "policy_name"}
+    canonical = json.dumps(_canon(settings), sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:10]
 
 
@@ -190,7 +238,7 @@ def _mistyped(policy: dict) -> list[str]:
         elif isinstance(ref, str):
             ok = isinstance(value, str) and bool(value.strip())
         elif isinstance(ref, list):
-            ok = isinstance(value, list)
+            ok = isinstance(value, list) and all(isinstance(x, str) for x in value)
         else:
             ok = isinstance(value, dict)
             if ok:
@@ -203,16 +251,27 @@ def _mistyped(policy: dict) -> list[str]:
 
 
 def check_policy(policy: dict) -> tuple[list[str], list[str]]:
-    """Return (errors, warnings). A policy with errors must not be saved."""
+    """Return (errors, warnings). A policy with errors must not be saved, and the engine may not run on it."""
     errors, warnings = [], []
-    if not isinstance(policy, dict):
-        return ["The policy is not in the expected format."], []
+    try:
+        policy = normalise(policy)
+    except ValueError as exc:
+        return [str(exc)], []
     missing = [k for k in LEGACY if k not in policy]
     if missing:
         return [f"Missing settings: {', '.join(sorted(missing))}"], []
     mistyped = _mistyped(policy)
     if mistyped:
         return [f"These settings are blank or not valid: {', '.join(mistyped)}. Enter a value for each."], []
+    for table, required in REQUIRED_KEYS.items():
+        absent = required - set(policy[table])
+        if absent:
+            errors.append(f"{table} is missing: {', '.join(sorted(map(str, absent)))}.")
+        extra = set(policy[table]) - required
+        if extra and table in FIXED_KEY_TABLES:
+            errors.append(f"{table} has entries the engine does not use: {', '.join(sorted(map(str, extra)))}.")
+    if errors:
+        return errors, []
 
     w = policy["weights"]
     if any(v < 0 for v in w.values()):
@@ -227,12 +286,12 @@ def check_policy(policy: dict) -> tuple[list[str], list[str]]:
         errors.append("The Approaching threshold must lie between 0 and the Meets threshold.")
     if not 0 < policy["exceeds_threshold"] <= 100:
         errors.append("The Exceeds threshold must be between 0 and 100.")
-    for name in ("breadth_level", "domain_exceeds_level"):
+    for name in ("breadth_level", "domain_exceeds_level", "distinguished_level"):
         if not 0 < policy[name] <= 1:
             errors.append(f"{name} must be between 0 and 1.")
     if not 0 <= policy["distinction_min_total"] <= 100:
         errors.append("The floor score for the large-award route must be between 0 and 100.")
-    if policy["pub_min_count"] < 1 or int(policy["pub_min_count"]) != policy["pub_min_count"]:
+    if not isinstance(policy["pub_min_count"], int) or policy["pub_min_count"] < 1:
         errors.append("The publication minimum must be a whole number of at least 1.")
     if not 0 < policy["standard_research_effort"] <= 100:
         errors.append("Standard research effort must be between 0 and 100 percent.")
@@ -240,7 +299,7 @@ def check_policy(policy: dict) -> tuple[list[str], list[str]]:
         errors.append("The adjustment factor range must satisfy 0 < minimum <= 1 <= maximum.")
     if not 0 < policy["reduced_assignment_factor"] <= 1:
         errors.append("The reduced-assignment factor must be between 0 and 1.")
-    if policy["rolling_max_domains"] not in (0, 1, 2, 3):
+    if policy["rolling_max_domains"] not in (0, 1, 2, 3) or not isinstance(policy["rolling_max_domains"], int):
         errors.append("The rolling window may rescue 0, 1, 2 or 3 domains.")
     for name, allowed in (("exceeds_rule", EXCEEDS_RULES), ("reduced_assignment_rule", REDUCED_RULES),
                           ("rolling_benchmark", ROLLING_BENCHMARKS), ("rounding", ROUNDING_MODES)):
@@ -251,22 +310,13 @@ def check_policy(policy: dict) -> tuple[list[str], list[str]]:
             errors.append(f"Saturation for domain {d} must be greater than 0.")
         if policy["benchmark_units"][d] < 0:
             errors.append(f"Benchmark units for domain {d} cannot be negative.")
-    if set(int(k) for k in policy["journal_tier_mult"]) != set(TIER_KEYS):
-        errors.append("Journal tier multipliers must be given for tiers 1, 2, 3 and 0.")
-    for required, table in (({"lead", "coauthor"}, "author_role_mult"),
-                            (set(GRANT_ROLES), "grant_role_mult"),
-                            (set(PRES_ROLES), "pres_role_mult"),
-                            ({"internal", "minor", "major", "large"}, "submission_base"),
-                            ({"internal", "minor", "major", "large"}, "award_base"),
-                            ({"A", "B", "C", "0"}, "venue_tier_mult")):
-        absent = required - set(policy[table])
-        if absent:
-            errors.append(f"{table} is missing: {', '.join(sorted(absent))}.")
     for table in ("journal_tier_mult", "author_role_mult", "other_output_units", "editorial_units",
                   "submission_base", "award_base", "grant_role_mult", "grant_review_units",
                   "pres_type_base", "venue_tier_mult", "pres_role_mult"):
-        if any(float(v) < 0 for v in policy[table].values()):
+        if any(v < 0 for v in policy[table].values()):
             errors.append(f"{table} cannot contain negative values.")
+    if policy["journal_tier_mult"][0] != 0 or policy["venue_tier_mult"]["0"] != 0:
+        errors.append("Questionable venues (journal tier 0, venue tier 0) earn no credit; their multiplier must be 0.")
     for name in ("other_output_cap", "editorial_cap", "impact_cap", "submission_cap", "implementation_cap",
                  "grant_review_cap", "development_cap", "chair_cap", "local_cap", "student_mentee_increment",
                  "book_units", "chapter_units", "impact_units", "scored_bonus", "implementation_units",
@@ -284,8 +334,8 @@ def check_policy(policy: dict) -> tuple[list[str], list[str]]:
     if not set(policy["pres_gate_roles"]) <= set(PRES_ROLES) or not policy["pres_gate_roles"]:
         errors.append("pres_gate_roles must list at least one known presentation role.")
     md = policy["missing_defaults"]
-    if md.get("venue") not in policy["venue_tier_mult"] or md.get("pres_role") not in policy["pres_role_mult"] \
-            or md.get("book_role") not in policy["author_role_mult"]:
+    if md["venue"] not in policy["venue_tier_mult"] or md["pres_role"] not in policy["pres_role_mult"] \
+            or md["book_role"] not in policy["author_role_mult"]:
         errors.append("missing_defaults refers to an unknown venue tier or role.")
 
     if not errors:
@@ -300,19 +350,23 @@ def check_policy(policy: dict) -> tuple[list[str], list[str]]:
                 f"{policy['meets_threshold']:g}; the threshold is not enforced, so the minimums alone decide Meets.")
         if policy["exceeds_threshold"] <= floor:
             warnings.append("The Exceeds threshold is not above the score earned by meeting the minimums.")
+        if not policy["award_gate_roles"]:
+            warnings.append("No role on a new award satisfies the grant minimum under these settings.")
     return errors, warnings
 
 
 def diff(old: dict, new: dict) -> list[tuple[str, object, object]]:
     """List (setting, old value, new value) for every leaf value that differs."""
+    def same(a, b) -> bool:
+        return json.dumps(_canon(a), sort_keys=True) == json.dumps(_canon(b), sort_keys=True)
+
     out = []
     old, new = normalise(old), normalise(new)
     for key in sorted(set(old) | set(new)):
         a, b = old.get(key), new.get(key)
         if isinstance(a, dict) and isinstance(b, dict):
-            for sub in sorted(set(a) | set(b), key=str):
-                if a.get(sub) != b.get(sub):
-                    out.append((f"{key}.{sub}", a.get(sub), b.get(sub)))
-        elif a != b:
+            out += [(f"{key}.{sub}", a.get(sub), b.get(sub)) for sub in sorted(set(a) | set(b), key=str)
+                    if not same(a.get(sub), b.get(sub))]
+        elif not same(a, b):
             out.append((key, a, b))
     return out

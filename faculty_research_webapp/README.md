@@ -51,6 +51,8 @@ The tests include an exact reproduction of the Phase 1 results: under the "Phase
 | `forms.py` | Maps the entry tables to the engine's input |
 | `storage.py` | Policy, change log and saved evaluations on disk |
 | `exports.py` | PDF and Excel reports |
+| `policy_labels.py` | Plain-language label for every policy setting |
+| `tools/write_policy_tables.py` | Regenerates section 8 of the policy note |
 | `app.py` | The screens |
 | `ui.py`, `.streamlit/config.toml` | Styling: theme, stylesheet and the result panel |
 | `static/` | Bundled typefaces (Public Sans and Newsreader, SIL Open Font License) |

@@ -218,7 +218,7 @@ def rows_from_faculty(fac: dict) -> dict:
     pubs = []
     for p in fac.get("publications", []):
         t = p.get("type", "article")
-        role = p.get("role", "coauthor") if t == "article" else p.get("role")
+        role = p.get("role")
         tier = p.get("tier")
         pubs.append({
             "Title": p.get("title", ""), "Journal or publisher": "", "Type": _reverse(PUB_TYPES, t),

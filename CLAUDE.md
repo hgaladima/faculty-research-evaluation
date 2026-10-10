@@ -11,7 +11,7 @@ Document map, in order of authority:
 - `prompt0..md` (double dot in the filename) – Phase 1 brief; the project baseline for intent.
 - `prompt2.md` – Phase 2 brief: scoring-policy settings page, web app, Excel calculator, validation workbook, user guide. SAS is out of scope.
 - `REVIEW_FINDINGS.md` – numbered gaps in the Phase 1 logic. Other documents and test names cite these numbers (for example 2.5).
-- `PROVISIONAL_POLICY.md` – every threshold and criterion the provisional policy applies, with its source and the finding it answers. Section 8 is generated from `engine/policy.py`; regenerate it when a default changes. The app's Guide tab displays this file.
+- `PROVISIONAL_POLICY.md` – every threshold and criterion the provisional policy applies, with its source and the finding it answers. Section 8 is generated: after changing a default run `python -m tools.write_policy_tables` from `faculty_research_webapp/`. Sections 1-7 are hand-written and must be updated to match. The app's Guide tab displays this file.
 - `docs/` – the two ODU source documents. Neither states numeric minimums.
 - `research_eval.py.txt`, `scenarios.py.txt`, `sensitivity.py.txt` – the original Phase 1 engine. **Do not edit them**: the tests load them as the reference that the "Phase 1 original" preset must reproduce.
 - `prompt1.md` – unrelated (a docs-editor PRD). Ignore it.
@@ -28,6 +28,7 @@ streamlit run app.py                      # the app, http://localhost:8501
 python -m pytest                          # all tests
 python -m pytest tests/test_engine.py -k "2_5"    # one test, by finding number or name
 python -m engine.sensitivity              # Phase 1 vs provisional on the 22 scenarios
+python -m tools.write_policy_tables       # regenerate section 8 of PROVISIONAL_POLICY.md
 ```
 
 ## Architecture
@@ -36,11 +37,12 @@ python -m engine.sensitivity              # Phase 1 vs provisional on the 22 sce
 
 `evaluate(fac, policy)`:
 
-1. `validate` runs first. Any error returns class `Incomplete: input errors` with no score; the engine never raises on bad input.
+1. `validate` runs first. Any error returns class `Incomplete: input errors` with no score; the engine never raises on bad input, whatever its shape (a fuzz test corrupts random records to hold this). Yes/no fields must be real booleans.
 2. `adjustment_factor` = (research effort / standard) × (months active / 12), clamped. It scales the publication benchmark and the saturation caps.
 3. `pub_units` / `grant_units` / `pres_units` return units, gate and partial signals, flags, and `lines` (the per-item breakdown shown to users).
 4. Gate resolution: the annual gate, then first-year, reduced-assignment and three-year rolling-window allowances. `gate_basis` records which one applied.
-5. Classification: gates first, then the `exceeds_rule`.
+5. `_display_scores`: the overall score is the rounded true total; with `total_from_rounded_parts` on, one domain score is shown 0.1 off its own rounding where needed so the parts add up.
+6. Classification: gates first, then the `exceeds_rule`. `class_basis` records why.
 
 `flags` are for committee attention; `notes` explain an allowance or proration.
 
@@ -49,9 +51,11 @@ python -m engine.sensitivity              # Phase 1 vs provisional on the 22 sce
 - `LEGACY` – Phase 1 behaviour, exactly.
 - `PROVISIONAL` – the default; `LEGACY` plus the overrides in `_provisional()`.
 
-The governing rule: **a scoring change is a new policy key whose `LEGACY` value reproduces Phase 1.** Never change behaviour unconditionally, and never put a literal in the engine. `tests/test_engine.py` enforces this by comparing the engine under `LEGACY` with the original `.py.txt` engine on the 22 scenarios and 1,500 random profiles. Then add the key to `check_policy`, to `POLICY_GROUPS` or `POLICY_TABLES` in `app.py` so it appears on the settings page, and to `PROVISIONAL_POLICY.md`.
+The governing rule: **a scoring change is a new policy key whose `LEGACY` value reproduces Phase 1.** Never change behaviour unconditionally, and never put a literal in the engine. The tests enforce this by comparing the engine under `LEGACY` with the original `.py.txt` engine on the 22 scenarios and on random profiles; when a new input field can affect scoring, add it to the random generators (`_random_profile` in `tests/test_engine.py`, and the DOI/id/prior-year battery in `tests/test_engine_review.py`), because a field the generators never produce is not covered. Then add the key to `POLICY_GROUPS` or `POLICY_TABLES` in `policy_labels.py` so it appears on the settings page and in the policy note, and describe it in `PROVISIONAL_POLICY.md`. `check_policy` types every key against `LEGACY` automatically; add a range check there if the key needs one.
 
-`fingerprint(policy)` is a short hash printed on every report. It treats 10000 and 10000.0 as equal because the settings widgets return floats.
+`check_policy` must reject every policy the engine cannot run: a test asserts that any accepted variant scores all 22 scenarios without raising. `normalise` gives the canonical form (known keys only, int tier keys, whole-number settings as ints, role lists in standard order); `evaluate` normalises a policy that arrives with string tier keys.
+
+`fingerprint(policy)` is a short hash of the scoring settings, printed on every report. It ignores the policy name, treats 10000 and 10000.0 as equal (the settings widgets return floats), and treats `True` and `1` as different.
 
 **App layers.** `app.py` (Streamlit screens) → `forms.py` (entry tables ↔ engine record; `rows_from_faculty` is the inverse of `build_faculty`, and a test round-trips all 22 scenarios through both) → `engine`. `storage.py` writes the active policy, its change log and saved evaluations under `data/` (git-ignored; personnel data). `exports.py` builds the PDF and Excel reports.
 
@@ -64,6 +68,7 @@ The Scoring policy tab builds a `draft` from the widgets on every run and compar
 ## Gotchas
 
 - Journal tier is an int (`0`-`3`; 0 is a questionable venue); venue tier is a string (`"A"`, `"B"`, `"C"`, `"0"`). JSON turns tier keys into strings; `policy.normalise` restores them.
+- When checking that a test would notice a regression, inject the bug into a scratch copy of the engine and run the engine tests; several early tests passed for the wrong reason until this was done.
 - Publication `count` (drives the gate) and `units` (drive excellence) are separate tallies: a book counts as 2, only the first chapter counts, tier-0 and non-peer-reviewed articles count as 0.
 - Scenarios reuse dict objects through list multiplication (`[A(0)] * 5`); deep-copy before mutating.
 - `engine/scenarios.py` is the Phase 1 file plus an explicit `role: presenter` on presentations, because the provisional policy treats a missing role as coauthor.

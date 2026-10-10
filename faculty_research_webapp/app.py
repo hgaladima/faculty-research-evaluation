@@ -13,9 +13,9 @@ import exports
 import forms
 import storage
 import ui
+from policy_labels import OPTION_LABELS, POLICY_GROUPS, POLICY_TABLES
 from engine import PRESETS, check_policy, evaluate, fingerprint
-from engine.policy import (EXCEEDS_RULES, GRANT_ROLES, PRES_ROLES, REDUCED_RULES, ROLLING_BENCHMARKS,
-                           ROUNDING_MODES, diff, minimum_score, normalise, to_json)
+from engine.policy import diff, minimum_score, normalise, to_json
 from engine.research_eval import INCOMPLETE, NOT_EVALUATED
 from engine.scenarios import SCENARIOS
 
@@ -53,105 +53,6 @@ JOURNAL_TIER_HELP = ("Tier 1: top quartile (Q1) of its subject category, or the 
 VENUE_TIER_HELP = ("Tier A: major national or international society meeting with competitive peer-reviewed "
                    "abstract selection. Tier B: regional or state society meeting, or a national meeting with "
                    "light review. Tier C: local meeting or limited review. Quality counts more than geography.")
-
-OPTION_LABELS = {
-    "total": "Score at or above the Exceeds threshold",
-    "breadth": "Score at or above the threshold AND two domains strong",
-    "total_or_distinction": "Score at or above the threshold, OR a new large competitive award as PI/MPI",
-    "breadth_or_distinction": "Threshold AND two domains strong, OR a new large competitive award as PI/MPI",
-    "waive_below_threshold": "Waive grant and presentation minimums outright",
-    "documented_activity": "Require documented activity in place of the full minimum",
-    "current_year": "This year's (possibly prorated) minimum for all three years",
-    "standard_prior_years": "This year's minimum plus the standard minimum for the two prior years",
-    "bankers": "Round half to even (Python default)", "half_up": "Round half up (matches Excel)",
-}
-
-POLICY_GROUPS = [
-    ("Weights and classification", True, [
-        ("weights.P", "Publications: maximum points", "num"),
-        ("weights.G", "Grants and contracts: maximum points", "num"),
-        ("weights.R", "Presentations: maximum points", "num"),
-        ("anchor_share", "Share of a domain's points earned by meeting its minimum (0-1)", "num"),
-        ("meets_threshold", "Meets Expectations threshold", "num"),
-        ("enforce_meets_threshold", "Meets also requires the score to reach the Meets threshold", "bool"),
-        ("exceeds_threshold", "Exceeds Expectations threshold", "num"),
-        ("exceeds_rule", "Rule for Exceeds Expectations", EXCEEDS_RULES),
-        ("breadth_level", "A domain is 'strong' at this share of its points (0-1)", "num"),
-        ("distinction_min_total", "Floor score for the large-award route to Exceeds", "num"),
-        ("approaching_threshold", "Flag as 'approaching' at this score when one minimum is unmet", "num"),
-        ("domain_exceeds_level", "A domain shows 'Exceeds' at this share of its points (0-1)", "num"),
-    ]),
-    ("Minimum expectations", True, [
-        ("pub_min_count", "Peer-reviewed publications expected per year", "int"),
-        ("grant_gate_requires_external", "Grant minimum requires an external (not internal) submission", "bool"),
-        ("award_gate_roles", "Roles on a new award that satisfy the grant minimum", ("multi", GRANT_ROLES)),
-        ("pres_gate_roles", "Roles that satisfy the presentation minimum", ("multi", PRES_ROLES)),
-    ]),
-    ("Adjustments for effort, leave and career stage", True, [
-        ("standard_research_effort", "Standard research assignment (%)", "num"),
-        ("factor_min", "Lowest adjustment factor", "num"),
-        ("factor_max", "Highest adjustment factor", "num"),
-        ("evaluate_zero_assignment", "Rate faculty with 0% research effort or 0 active months", "bool"),
-        ("reduced_assignment_factor", "Reduced assignment applies at or below this factor", "num"),
-        ("reduced_assignment_rule", "Treatment of a reduced assignment", REDUCED_RULES),
-        ("rolling_max_domains", "Domains the three-year rolling window may rescue in one year", [0, 1, 2, 3]),
-        ("rolling_benchmark", "Publication requirement over the rolling window", ROLLING_BENCHMARKS),
-    ]),
-    ("Counting rules", True, [
-        ("dedupe_doi", "Count a publication once when the same DOI is entered twice", "bool"),
-        ("dedupe_submission_award", "Credit a proposal funded in the same year as an award only", "bool"),
-        ("amount_bands.minor_max", "Awards below this amount are 'minor' ($)", "num"),
-        ("amount_bands.large_min", "Awards at or above this amount are 'large' ($)", "num"),
-        ("rounding", "Rounding of displayed scores", ROUNDING_MODES),
-        ("total_from_rounded_parts", "Overall score is the sum of the displayed domain scores", "bool"),
-        ("missing_defaults.venue", "Venue tier assumed when not yet verified", ["A", "B", "C"]),
-        ("missing_defaults.pres_role", "Presentation role assumed when missing", PRES_ROLES),
-        ("missing_defaults.book_role", "Book author role assumed when missing", ["lead", "coauthor"]),
-    ]),
-    ("Benchmarks, increments and caps (in units)", False, [
-        ("benchmark_units.P", "Publications: benchmark units at the standard minimum", "num"),
-        ("benchmark_units.G", "Grants: benchmark units", "num"),
-        ("benchmark_units.R", "Presentations: benchmark units", "num"),
-        ("saturation.P", "Publications: units above benchmark for full excellence credit", "num"),
-        ("saturation.G", "Grants: units above benchmark for full excellence credit", "num"),
-        ("saturation.R", "Presentations: units above benchmark for full excellence credit", "num"),
-        ("student_mentee_increment", "Increment when a student or mentee is first author", "num"),
-        ("book_units", "Scholarly book (lead author)", "num"),
-        ("book_coauthor_mult", "Book: multiplier for a non-lead author", "num"),
-        ("chapter_units", "Book chapter", "num"),
-        ("chapter_cap", "Cap on book-chapter credit (blank = no cap)", "optnum"),
-        ("other_output_cap", "Cap on other scholarly outputs", "num"),
-        ("editorial_cap", "Cap on editorial and review service", "num"),
-        ("impact_units", "Each documented impact on policy or practice", "num"),
-        ("impact_cap", "Cap on documented impacts", "num"),
-        ("noncompetitive_mult", "Noncompetitive submission multiplier", "num"),
-        ("noncompetitive_award_mult", "Noncompetitive award or contract multiplier", "num"),
-        ("scored_bonus", "Bonus for a scored or discussed proposal", "num"),
-        ("submission_cap", "Cap on credit from submissions", "num"),
-        ("implementation_units", "Each active funded project in a substantive role", "num"),
-        ("implementation_cap", "Cap on active-project credit", "num"),
-        ("grant_review_cap", "Cap on grant-review credit", "num"),
-        ("development_units", "Each proposal in development or unfunded project", "num"),
-        ("development_cap", "Cap on development credit", "num"),
-        ("chair_units", "Each session chaired or organised", "num"),
-        ("chair_cap", "Cap on session-chair credit", "num"),
-        ("local_cap", "Cap on institutional, outreach and seminar presentations", "num"),
-    ]),
-]
-POLICY_TABLES = [
-    ("journal_tier_mult", "Journal tier multipliers (0 = questionable venue)"),
-    ("author_role_mult", "Author role multipliers"),
-    ("other_output_units", "Other scholarly outputs (units each)"),
-    ("editorial_units", "Editorial and peer-review service (units each)"),
-    ("submission_base", "Proposal submitted: base units by size band"),
-    ("award_base", "Award received: base units by size band"),
-    ("grant_role_mult", "Grant role multipliers"),
-    ("grant_review_units", "Grant review panels (units each)"),
-    ("pres_type_base", "Presentation type: base units"),
-    ("venue_tier_mult", "Venue tier multipliers"),
-    ("pres_role_mult", "Presentation role multipliers"),
-]
-
 
 # ------------------------------------------------------------------------------- state
 def make_table(name: str, rows: list[dict]) -> pd.DataFrame:
