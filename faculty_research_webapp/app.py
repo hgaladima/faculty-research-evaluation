@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from datetime import date
 from pathlib import Path
 
@@ -192,10 +193,12 @@ def init_state() -> None:
         st.session_state["pol_rev"] = 0
         st.session_state["draft_base"] = copy.deepcopy(active_policy())
         st.session_state["loaded_stamp"] = None
+        st.session_state["open_file"] = None
         apply_form({"info": {}})
     if "pending_form" in st.session_state:
         pending = st.session_state.pop("pending_form")
         st.session_state["loaded_stamp"] = pending.get("stamp")
+        st.session_state["open_file"] = pending.get("file")
         apply_form(pending["form"])
 
 
@@ -218,7 +221,8 @@ def sidebar() -> None:
     choice = st.sidebar.selectbox("Saved evaluations", saved, index=None, placeholder="Choose a saved evaluation")
     if st.sidebar.button("Open saved evaluation", disabled=choice is None, width="stretch"):
         record = storage.load_evaluation(choice)
-        st.session_state["pending_form"] = {"form": record["form"], "stamp": record["policy"]["fingerprint"]}
+        st.session_state["pending_form"] = {"form": record["form"], "stamp": record["policy"]["fingerprint"],
+                                            "file": choice}
         st.rerun()
     example = st.sidebar.selectbox("Example profiles (hypothetical)", [s["name"] for s in SCENARIOS], index=None,
                                    placeholder="Choose one of the 22 test profiles")
@@ -375,7 +379,7 @@ def tab_results(form: dict) -> None:
     if cls == NOT_EVALUATED:
         st.warning(f"**{cls}.** " + " ".join(result["notes"]))
         return
-    if not result["breakdown"] and "rolling" not in fac:
+    if not result["breakdown"] and "rolling" not in fac and not (info["name"] or info["faculty_id"]):
         st.html(ui.empty_state("Nothing to evaluate yet",
                                "Enter this year's publications, grants and presentations on the earlier tabs, "
                                "or load one of the example profiles from the sidebar."))
@@ -410,21 +414,38 @@ def tab_results(form: dict) -> None:
                 st.markdown(f"**{label}**  \n{text}")
 
     st.caption(f"Scoring policy: {exports.policy_stamp(result, meta).replace(' | ', ', ')}. {exports.DISCLAIMER}")
+    identified = bool(info["name"] or info["faculty_id"])
+    target = storage.evaluation_name(info)
+    other = None if st.session_state.get("open_file") == target else storage.saved_subject(target)
+    may_save = True
+    if identified and other is not None:
+        st.warning(f"A saved evaluation named {target} already exists, for {other or 'an unnamed faculty member'}. "
+                   f"Saving will replace it. To keep both, give this faculty member a different Faculty ID.")
+        may_save = st.checkbox(f"Replace the saved evaluation {target}", key=f"replace_{target}")
     a, b, c = st.columns(3)
-    if a.button("Save evaluation", type="primary", width="stretch"):
-        if not (info["name"] or info["faculty_id"]):
+    if a.button("Save evaluation", type="primary", width="stretch", disabled=not may_save):
+        if not identified:
             st.error("Enter a faculty name or ID on the Faculty tab before saving.")
         else:
             name = storage.save_evaluation({"form": form, "result": result, "policy": result["policy"],
                                             "policy_version": meta["version"]})
             st.session_state["loaded_stamp"] = result["policy"]["fingerprint"]
+            st.session_state["open_file"] = name
             st.success(f"Saved as {name}. Reopen it from the sidebar.")
-    file_stub = f"research_evaluation_{storage.slug(info['faculty_id'] or info['name'])}_{info['evaluation_year']}"
-    b.download_button("Download report (PDF)", exports.pdf_bytes(info, result, meta, context),
-                      f"{file_stub}.pdf", "application/pdf", width="stretch")
-    c.download_button("Download report (Excel)", exports.excel_bytes(info, result, policy, meta, context),
-                      f"{file_stub}.xlsx",
+    pdf, workbook = report_files(json.dumps({"info": info, "result": result, "policy": policy, "meta": meta,
+                                             "context": context}, sort_keys=True, default=str))
+    file_stub = f"research_evaluation_{target}"
+    b.download_button("Download report (PDF)", pdf, f"{file_stub}.pdf", "application/pdf", width="stretch")
+    c.download_button("Download report (Excel)", workbook, f"{file_stub}.xlsx",
                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
+
+
+@st.cache_data(max_entries=4, show_spinner=False)
+def report_files(payload: str) -> tuple[bytes, bytes]:
+    """Build the PDF and Excel reports once per distinct result, not on every rerun."""
+    d = json.loads(payload)
+    return (exports.pdf_bytes(d["info"], d["result"], d["meta"], d["context"]),
+            exports.excel_bytes(d["info"], d["result"], d["policy"], d["meta"], d["context"]))
 
 
 # ------------------------------------------------------------------------------- scoring policy
@@ -603,7 +624,7 @@ def tab_guide() -> None:
 def main() -> None:
     st.set_page_config(page_title="Faculty Research Evaluation", page_icon=":material/school:", layout="wide")
     init_state()
-    st.html(ui.CSS)
+    st.html(ui.stylesheet(st.get_option))
     sidebar()
     st.html(ui.masthead(st.session_state["info_name"], st.session_state["info_faculty_id"],
                         st.session_state["info_evaluation_year"]))

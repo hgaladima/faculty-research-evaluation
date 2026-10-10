@@ -17,10 +17,10 @@ On Windows, double-click `run_app.bat` after installing the requirements. The ap
 
 ## Use it
 
-1. **Faculty Information** – name, year, assigned research effort and months active.
-2. **Publications, Grants and Contracts, Presentations, Other Scholarly Activities** – one row per item; pick from the dropdowns.
-3. **Evaluation Results** – score, classification, minimums met, and how each point was earned. Save the evaluation, or download the report as PDF or Excel.
-4. **Scoring Policy** – every threshold and criterion. Review the effect of a change on the 22 test profiles before saving, then approve and lock the policy for the year.
+1. **Faculty** – name, year, assigned research effort and months active.
+2. **Publications, Grants, Presentations, Other activity** – one row per item; pick from the dropdowns.
+3. **Results** – score, classification, minimums met, and how each point was earned. Save the evaluation, or download the report as PDF or Excel.
+4. **Scoring policy** – every threshold and criterion. Review the effect of a change on the 22 test profiles before saving, then approve and lock the policy for the year.
 
 To try it without typing, load one of the 22 hypothetical profiles from the sidebar.
 

@@ -73,13 +73,25 @@ def slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_") or "unnamed"
 
 
+def evaluation_name(info: dict) -> str:
+    who = slug(info.get("faculty_id") or info.get("name") or "")
+    return f"{who}_{slug(str(info.get('evaluation_year') or ''))}"
+
+
 def save_evaluation(record: dict) -> str:
-    info = record["form"]["info"]
-    name = f"{slug(info.get('faculty_id') or info.get('name') or '')}_{slug(str(info.get('evaluation_year') or ''))}"
+    name = evaluation_name(record["form"]["info"])
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     record["saved_at"] = _now()
     (EVAL_DIR / f"{name}.json").write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
     return name
+
+
+def saved_subject(name: str) -> str | None:
+    """Who a saved evaluation is for, or None when no file has that name."""
+    if not (EVAL_DIR / f"{name}.json").exists():
+        return None
+    info = load_evaluation(name)["form"]["info"]
+    return ", ".join(x for x in (info.get("name"), info.get("faculty_id"), str(info.get("evaluation_year") or "")) if x)
 
 
 def list_evaluations() -> list[str]:

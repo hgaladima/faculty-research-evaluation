@@ -428,7 +428,7 @@ def _empty_result(fac: dict, cfg: dict, cls: str, errors=None, notes=None) -> di
     return {
         "name": fac.get("name", ""), "faculty_id": fac.get("faculty_id", ""),
         "evaluation_year": fac.get("evaluation_year", ""),
-        "P": 0.0, "G": 0.0, "R": 0.0, "total": 0.0, "class": cls,
+        "P": 0.0, "G": 0.0, "R": 0.0, "total": 0.0, "class": cls, "class_basis": "not_scored",
         "gates": {"P": False, "G": False, "R": False}, "gate_basis": {"P": "", "G": "", "R": ""},
         "factor": 0.0, "pub_benchmark": 0, "pub_count": 0, "units": {"P": 0.0, "G": 0.0, "R": 0.0},
         "domains": {}, "breakdown": [], "approaching": False, "scored": False,
@@ -554,25 +554,33 @@ def evaluate(fac: dict, cfg: dict = PROVISIONAL) -> dict:
         on_score = by_total and (broad or not needs_breadth)
         on_award = distinct and rule in ("total_or_distinction", "breadth_or_distinction")
         exceeds = on_score or on_award
-        cls = EXCEEDS if exceeds else MEETS
-        if on_award and not on_score:
-            notes.append("Exceeds Expectations through a new competitive large award as PI or MPI")
-        if not exceeds and by_total and needs_breadth:
-            notes.append(f"Score is {total} but Exceeds Expectations also requires at least two domains at "
-                         f"{cfg['breadth_level']:.0%} of their points")
         if cfg["enforce_meets_threshold"] and total < cfg["meets_threshold"]:
-            cls = DOES_NOT_MEET
+            cls, class_basis = DOES_NOT_MEET, "below_meets_threshold"
             flags.append(f"All minimums met but the score is below the Meets threshold of "
                          f"{cfg['meets_threshold']:g}")
+        elif on_score:
+            cls, class_basis = EXCEEDS, "exceeds_on_score"
+        elif on_award:
+            cls, class_basis = EXCEEDS, "exceeds_on_award"
+            notes.append("Exceeds Expectations through a new competitive large award as PI or MPI")
+        elif by_total and needs_breadth:
+            cls, class_basis = MEETS, "meets_lacks_breadth"
+            notes.append(f"Score is {total} but Exceeds Expectations also requires at least two domains at "
+                         f"{cfg['breadth_level']:.0%} of their points")
+        else:
+            cls, class_basis = MEETS, "meets"
     else:
-        cls = DOES_NOT_MEET
+        cls, class_basis = DOES_NOT_MEET, "minimum_unmet"
+        approaching = sum(not v for v in gates.values()) == 1 and total >= cfg["approaching_threshold"]
         if total >= cfg["meets_threshold"]:
             flags.append("Committee review: score >= 70 but a required minimum is unmet"
                          if cfg["meets_threshold"] == 70 else
                          f"Committee review: score >= {cfg['meets_threshold']:g} but a required minimum is unmet")
         elif any(shares[k] >= 0.9 for k in shares):
             flags.append("Committee review: distinguished performance in one domain with a required minimum unmet")
-        approaching = sum(not v for v in gates.values()) == 1 and total >= cfg["approaching_threshold"]
+        elif approaching:
+            flags.append(f"Committee review: one required minimum is unmet and the score is at or above "
+                         f"{cfg['approaching_threshold']:g} (approaching expectations)")
     if first_year:
         notes.append(f"First-year faculty: publication benchmark {B_count}")
     elif fct < 1.0:
@@ -599,7 +607,8 @@ def evaluate(fac: dict, cfg: dict = PROVISIONAL) -> dict:
         "name": fac.get("name", ""), "faculty_id": fac.get("faculty_id", ""),
         "evaluation_year": fac.get("evaluation_year", ""),
         "P": Pr, "G": Gr, "R": Rr, "total": total,
-        "class": cls, "gates": gates, "gate_basis": basis, "factor": round(fct, 2), "pub_benchmark": B_count,
+        "class": cls, "class_basis": class_basis, "gates": gates, "gate_basis": basis, "factor": round(fct, 2),
+        "pub_benchmark": B_count,
         "pub_count": pu["count"],
         "units": {"P": round(pu["units"], 2), "G": round(gu["units"], 2), "R": round(ru["units"], 2)},
         "domains": domains, "breakdown": pu["lines"] + gu["lines"] + ru["lines"],

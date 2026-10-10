@@ -2,7 +2,7 @@
 
 Prepared 10 October 2026 for Phase 2 of the faculty research evaluation tool.
 
-**Status: provisional.** Nothing in this note is School policy. Most open items in `REVIEW_FINDINGS.md` need a decision from the annual review committee. So that a working tool can be shown now, each item was given an interim default drawn from the Old Dominion University Faculty Handbook and from practice at other American universities. Every default can be changed on the app's Scoring Policy tab, and the original Phase 1 rules remain available there as a preset.
+**Status: provisional.** Nothing in this note is School policy. Most open items in `REVIEW_FINDINGS.md` need a decision from the annual review committee. So that a working tool can be shown now, each item was given an interim default drawn from the Old Dominion University Faculty Handbook and from practice at other American universities. Every default can be changed on the app's Scoring policy tab, and the original Phase 1 rules remain available there as a preset.
 
 Finding numbers (for example 2.5) refer to `REVIEW_FINDINGS.md`.
 
@@ -31,7 +31,7 @@ The ODU Handbook supports the idea of a locked settings page directly: the crite
 
 ## 3. Rules applied
 
-Each row is a setting on the Scoring Policy tab.
+Each row is a setting on the Scoring policy tab.
 
 ### Classification
 

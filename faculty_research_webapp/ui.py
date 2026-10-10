@@ -5,14 +5,27 @@ from html import escape
 
 from engine.research_eval import DOES_NOT_MEET, EXCEEDS, MEETS
 
-CSS = """
-<style>
-:root {
-  --ink: #14202B; --muted: #5A6A79; --line: #D5DCE4; --paper: #F3F5F8; --surface: #FFFFFF;
-  --harbor: #1D4E89; --harbor-soft: #E4ECF6;
+STATUS_COLOURS = """
   --good: #1F7A55; --good-soft: #E3F1EA; --warn: #A9690A; --warn-soft: #F8EDD8;
-  --bad: #B0362D; --bad-soft: #F7E4E1;
-}
+  --bad: #B0362D; --bad-soft: #F7E4E1;"""
+THEME_VARS = {"--ink": "theme.textColor", "--line": "theme.borderColor", "--paper": "theme.backgroundColor",
+              "--surface": "theme.secondaryBackgroundColor", "--harbor": "theme.primaryColor",
+              "--side-surface": "theme.sidebar.secondaryBackgroundColor", "--side-line": "theme.sidebar.borderColor",
+              "--side-text": "theme.sidebar.textColor"}
+FALLBACKS = {"--ink": "#14202B", "--line": "#D5DCE4", "--paper": "#F3F5F8", "--surface": "#FFFFFF",
+             "--harbor": "#1D4E89", "--side-surface": "#1C2E3E", "--side-line": "#31465A", "--side-text": "#E6ECF2"}
+
+
+def stylesheet(get_option) -> str:
+    """Build the stylesheet, taking base colours from the Streamlit theme (.streamlit/config.toml)."""
+    base = "".join(f"{var}: {get_option(key) or FALLBACKS[var]}; " for var, key in THEME_VARS.items())
+    return "<style>:root { " + base + STATUS_COLOURS + " }" + RULES + "</style>"
+
+
+RULES = """
+:root { --muted: color-mix(in srgb, var(--ink) 68%, var(--paper));
+  --track: color-mix(in srgb, var(--ink) 9%, var(--surface));
+  --side-muted: color-mix(in srgb, var(--side-text) 65%, var(--side-surface)); }
 .block-container { padding-top: 2.2rem; padding-bottom: 4rem; max-width: 1180px; }
 h1, h2, h3, h4 { letter-spacing: -0.01em; }
 h3 { font-size: 1.45rem !important; padding-top: 0.6rem !important; }
@@ -40,18 +53,19 @@ h4 { font-size: 1.15rem !important; }
 .fre-mast .fre-case span { color: var(--muted); font-size: 0.9rem; }
 
 /* Sidebar policy card */
-.fre-policy { border: 1px solid #31465A; border-radius: 0.6rem; padding: 0.85rem 0.95rem; background: #182938; }
-.fre-policy .name { font-weight: 600; color: #F2F6FA; line-height: 1.3; }
+.fre-policy { border: 1px solid var(--side-line); border-radius: 0.6rem; padding: 0.85rem 0.95rem;
+  background: var(--side-surface); }
+.fre-policy .name { font-weight: 600; color: var(--side-text); line-height: 1.3; }
 .fre-policy dl { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.7rem; margin: 0.6rem 0 0.7rem;
   font-size: 0.85rem; }
-.fre-policy dt { color: #9FB1C2; }
-.fre-policy dd { margin: 0; color: #E6ECF2; font-variant-numeric: tabular-nums; }
+.fre-policy dt { color: var(--side-muted); }
+.fre-policy dd { margin: 0; color: var(--side-text); font-variant-numeric: tabular-nums; }
 .fre-policy .state { font-size: 0.85rem; padding: 0.4rem 0.55rem; border-radius: 0.4rem; line-height: 1.35; }
-.fre-policy .state.locked { background: #17392E; color: #BFE6D2; }
-.fre-policy .state.open { background: #3C3013; color: #F1DDA9; }
-.fre-brand { font-family: Newsreader, Georgia, serif; font-size: 1.35rem; line-height: 1.15; color: #F2F6FA;
+.fre-policy .state.locked { background: color-mix(in srgb, var(--good) 40%, var(--side-surface)); color: var(--side-text); }
+.fre-policy .state.open { background: color-mix(in srgb, var(--warn) 40%, var(--side-surface)); color: var(--side-text); }
+.fre-brand { font-family: Newsreader, Georgia, serif; font-size: 1.35rem; line-height: 1.15; color: var(--side-text);
   margin: 0 0 0.25rem; }
-.fre-brand-sub { color: #9FB1C2; font-size: 0.86rem; margin: 0 0 1.1rem; line-height: 1.4; }
+.fre-brand-sub { color: var(--side-muted); font-size: 0.86rem; margin: 0 0 1.1rem; line-height: 1.4; }
 
 /* Result instrument */
 .fre-result { background: var(--surface); border: 1px solid var(--line); border-radius: 0.9rem;
@@ -71,10 +85,8 @@ h4 { font-size: 1.15rem !important; }
 .fre-result .score .of { display: block; color: var(--muted); font-size: 0.9rem; margin-top: 0.35rem; white-space: nowrap; }
 
 .fre-scale { position: relative; margin: 2.3rem 0 2.4rem; }
-.fre-scale .track { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: #E9EDF2; }
-.fre-scale .zone.below { background: #E3E8EE; }
-.fre-scale .zone.meets { background: #BFDDCD; }
-.fre-scale .zone.exceeds { background: #7FBF9F; }
+.fre-scale .track { position: relative; height: 12px; border-radius: 6px; background: var(--track); overflow: hidden; }
+.fre-scale .reached { height: 100%; width: var(--at); background: var(--tone); opacity: 0.32; }
 .fre-scale .marker { position: absolute; top: -9px; width: 4px; height: 30px; margin-left: -2px; border-radius: 2px;
   background: var(--ink); left: var(--at); animation: fre-arrive 0.9s cubic-bezier(.2,.7,.2,1) both; }
 .fre-scale .marker::after { content: attr(data-score); position: absolute; bottom: 100%; left: 50%;
@@ -82,7 +94,10 @@ h4 { font-size: 1.15rem !important; }
   font-variant-numeric: tabular-nums; }
 .fre-scale .tick { position: absolute; top: 12px; left: var(--at); transform: translateX(-50%);
   padding-top: 9px; font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
-.fre-scale .tick::before { content: ""; position: absolute; top: 0; left: 50%; width: 1px; height: 7px; background: #9AA8B5; }
+.fre-scale .tick::before { content: ""; position: absolute; top: 0; left: 50%; width: 1px; height: 7px; background: var(--muted); }
+.fre-scale .tick.low { padding-top: 26px; } .fre-scale .tick.low::before { height: 24px; }
+.fre-scale .tick.threshold::after { content: ""; position: absolute; top: -12px; left: 50%; width: 2px; height: 12px;
+  margin-left: -1px; background: var(--surface); }
 .fre-scale .tick.start { transform: none; } .fre-scale .tick.start::before { left: 0; }
 .fre-scale .tick.end { transform: translateX(-100%); } .fre-scale .tick.end::before { left: 100%; }
 @keyframes fre-arrive { from { left: 0; opacity: 0; } to { left: var(--at); opacity: 1; } }
@@ -96,7 +111,7 @@ h4 { font-size: 1.15rem !important; }
 .fre-domain .status.good { background: var(--good-soft); color: var(--good); }
 .fre-domain .status.warn { background: var(--warn-soft); color: var(--warn); }
 .fre-domain .status.bad { background: var(--bad-soft); color: var(--bad); }
-.fre-domain .bar { position: relative; height: 14px; border-radius: 7px; background: #E9EDF2; }
+.fre-domain .bar { position: relative; height: 14px; border-radius: 7px; background: var(--track); }
 .fre-domain .fill { height: 100%; border-radius: 7px; background: var(--harbor); width: var(--w); }
 .fre-domain .fill.warn { background: var(--warn); } .fre-domain .fill.bad { background: var(--bad); }
 .fre-domain .minline { position: absolute; top: -4px; bottom: -4px; left: var(--min); width: 2px; background: var(--ink); }
@@ -114,7 +129,7 @@ h4 { font-size: 1.15rem !important; }
 .fre-note ul { margin: 0; padding-left: 1.1rem; }
 .fre-note.attention { border-left: 4px solid var(--warn); }
 
-.fre-empty { background: var(--surface); border: 1px dashed #B9C4D0; border-radius: 0.9rem; padding: 2.4rem 2rem;
+.fre-empty { background: var(--surface); border: 1px dashed var(--muted); border-radius: 0.9rem; padding: 2.4rem 2rem;
   text-align: center; }
 .fre-empty h4 { font-family: Newsreader, Georgia, serif; font-weight: 500; font-size: 1.6rem !important; margin: 0 0 0.4rem; padding: 0; }
 .fre-empty p { color: var(--muted); margin: 0 auto; max-width: 52ch; }
@@ -127,8 +142,10 @@ h4 { font-size: 1.15rem !important; }
   .fre-result .head { flex-wrap: wrap; }
   .fre-result .score { text-align: left; }
   .fre-result .score .num { font-size: 3.4rem; }
+  .fre-scale { margin-bottom: 3.4rem; }
+  .fre-scale .tick.exceeds { padding-top: 26px; }
+  .fre-scale .tick.exceeds::before { height: 24px; }
 }
-</style>
 """
 
 TONE = {"Exceeds": "good", "Meets": "good", "Approaching": "warn", "Not met": "bad"}
@@ -158,20 +175,39 @@ def policy_card(name: str, version: int, stamp: str, locked: bool, approved_by: 
 
 
 def result_reason(result: dict, policy: dict) -> str:
-    unmet = [d["name"] for d in result["domains"].values() if not d["minimum_met"]]
-    if unmet:
-        text = f"Minimum expectation not met in {' and '.join(unmet).lower()}."
+    """One or two sentences saying why the engine assigned this class."""
+    basis, total = result["class_basis"], result["total"]
+    exceeds, meets = policy["exceeds_threshold"], policy["meets_threshold"]
+    met = "All three minimum expectations are met."
+    if basis == "minimum_unmet":
+        unmet = [d["name"].lower() for d in result["domains"].values() if not d["minimum_met"]]
+        text = f"Minimum expectation not met in {' and '.join(unmet)}."
         if result["approaching"]:
-            text += " One minimum short, with a strong score otherwise: flagged for committee attention."
+            text += (f" Only one minimum is unmet and the score is at least {policy['approaching_threshold']:g}, "
+                     f"so this is flagged for committee review.")
         return text
-    if result["class"] == EXCEEDS:
-        return "All three minimum expectations are met, and the year stands well above them."
-    gap = policy["exceeds_threshold"] - result["total"]
-    if gap > 0:
-        return (f"All three minimum expectations are met. Exceeds Expectations starts at "
-                f"{policy['exceeds_threshold']:g}, {gap:.1f} points away.")
-    return ("All three minimum expectations are met. The score is above the Exceeds threshold, but Exceeds also "
-            "needs two strong domains.")
+    if basis == "below_meets_threshold":
+        return f"{met} The score of {total:g} is still below the Meets threshold of {meets:g}."
+    if basis == "exceeds_on_score":
+        return f"{met} The score is at or above the Exceeds threshold of {exceeds:g}."
+    if basis == "exceeds_on_award":
+        return (f"{met} Exceeds Expectations is awarded for a new competitive large award as PI or MPI; "
+                f"the score itself is below the Exceeds threshold of {exceeds:g}.")
+    if basis == "meets_lacks_breadth":
+        return (f"{met} The score reaches the Exceeds threshold of {exceeds:g}, but Exceeds also needs two domains "
+                f"at {policy['breadth_level']:.0%} of their points.")
+    return f"{met} Exceeds Expectations starts at {exceeds:g}, {exceeds - total:.1f} points away."
+
+
+def scale_ticks(meets: float, exceeds: float) -> str:
+    """Threshold labels for the 0-100 scale, dropped to a second row or omitted where they would collide."""
+    low = " low" if exceeds - meets < 14 else ""
+    ticks = "" if meets < 8 else '<div class="tick start" style="--at:0%">0</div>'
+    ticks += f'<div class="tick threshold" style="--at:{meets}%">Meets {meets:g}</div>'
+    ticks += f'<div class="tick threshold exceeds{low}" style="--at:{exceeds}%">Exceeds {exceeds:g}</div>'
+    if exceeds <= 88:
+        ticks += '<div class="tick end" style="--at:100%">100</div>'
+    return ticks
 
 
 def result_instrument(result: dict, policy: dict, who: str) -> str:
@@ -197,14 +233,9 @@ def result_instrument(result: dict, policy: dict, who: str) -> str:
         f'<div class="score"><span class="num">{total:g}</span><span class="of">overall score, of 100</span></div></div>'
         f'<div class="fre-scale" role="img" aria-label="Overall score {total:g} of 100. Meets threshold {meets:g}, '
         f'Exceeds threshold {exceeds:g}.">'
-        f'<div class="track"><div class="zone below" style="width:{meets}%"></div>'
-        f'<div class="zone meets" style="width:{exceeds - meets}%"></div>'
-        f'<div class="zone exceeds" style="width:{100 - exceeds}%"></div></div>'
+        f'<div class="track"><div class="reached" style="--at:{at}%"></div></div>'
         f'<div class="marker" style="--at:{at}%" data-score="{total:g}"></div>'
-        f'<div class="tick start" style="--at:0%">0</div>'
-        f'<div class="tick" style="--at:{meets}%">Meets {meets:g}</div>'
-        f'<div class="tick" style="--at:{exceeds}%">Exceeds {exceeds:g}</div>'
-        f'<div class="tick end" style="--at:100%">100</div></div>'
+        f'{scale_ticks(meets, exceeds)}</div>'
         f'<div class="fre-domains">{"".join(rows)}</div>'
         f'<p class="fre-legend"><i></i>Points earned by meeting the minimum expectation '
         f'({policy["anchor_share"]:.0%} of each domain). Work above the minimum fills the rest.</p></div>')
