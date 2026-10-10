@@ -5,7 +5,7 @@
   "customizations": {
     "codespaces": {
       "openFiles": [
-        "README.md",
+        "faculty_research_webapp/README.md",
         "faculty_research_webapp/app.py"
       ]
     },
@@ -17,9 +17,12 @@
       ]
     }
   },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
+  "updateContentCommand": "pip3 install --user -r faculty_research_webapp/requirements.txt && echo 'Packages installed'",
+  // Started from the app folder so its .streamlit/config.toml (theme, fonts, localhost-only) applies.
+  // Streamlit's CORS and XSRF protections stay on; the Codespaces forwarding address is named as the
+  // one allowed browser origin. Use the example profiles here: saved evaluations would live in the Codespace.
   "postAttachCommand": {
-    "server": "streamlit run faculty_research_webapp/app.py --server.enableCORS false --server.enableXsrfProtection false"
+    "server": "cd faculty_research_webapp && streamlit run app.py --browser.serverAddress \"$CODESPACE_NAME-8501.$GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN\""
   },
   "portsAttributes": {
     "8501": {
