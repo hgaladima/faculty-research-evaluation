@@ -26,7 +26,11 @@ To try it without typing, load one of the 22 hypothetical profiles from the side
 
 ## Data and access
 
-Saved evaluations, the active policy and its change log are written to the `data/` folder next to the app, as plain files. There is no login. Run it on a machine only authorised evaluators use, and treat `data/` as personnel records. Institutional deployment would need single sign-on, role-based access, encrypted storage and IT review first.
+The app listens on this computer only (`localhost`); other machines on the network cannot reach it. That is set in `.streamlit/config.toml`. Do not change it: the app has no login, so anyone who could reach it could read every evaluation and reopen the policy.
+
+Saved evaluations, the active policy and its change log are written to the `data/` folder next to the app, as plain files. Treat `data/` as personnel records, and run the app only on a machine authorised evaluators use. Institutional deployment would need single sign-on, role-based access, encrypted storage and IT review first.
+
+If two windows are open, a policy saved in one is picked up by the other on its next action; a save from an out-of-date window is refused.
 
 ## Tests
 

@@ -1,4 +1,6 @@
 [server]
+# Listen on this machine only. Evaluations are personnel records and the app has no login.
+address = "localhost"
 enableStaticServing = true
 
 [browser]

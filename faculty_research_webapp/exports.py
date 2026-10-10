@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import io
+import re
+from pathlib import Path
 from xml.sax.saxutils import escape
 
 from openpyxl import Workbook
@@ -11,6 +13,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFError, TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 INFO_LABELS = [("name", "Faculty member"), ("faculty_id", "Faculty ID"), ("rank", "Academic rank"),
@@ -20,12 +24,28 @@ INFO_LABELS = [("name", "Faculty member"), ("faculty_id", "Faculty ID"), ("rank"
 DISCLAIMER = ("Decision aid only. The scoring policy is provisional until adopted by the annual review "
               "committee; the chair's written evaluation and the faculty narrative remain the record.")
 
+CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+FORMULA_STARTS = ("=", "+", "-", "@")
+# A table cell taller than a page cannot be laid out, so long entries are shortened in the PDF tables only.
+PDF_CELL_LIMIT = 600
+SYSTEM_FONTS = [("C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/arialbd.ttf"),
+                ("/Library/Fonts/Arial.ttf", "/Library/Fonts/Arial Bold.ttf"),
+                ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")]
+
+
+def clean(value) -> str:
+    """Text safe for both report formats: no None, no control characters."""
+    return "" if value is None else CONTROL_CHARS.sub("", str(value))
+
 
 def policy_stamp(result: dict, meta: dict) -> str:
-    status = "locked" if meta.get("locked") else "not locked"
-    who = f", approved by {meta['approved_by']}" if meta.get("approved_by") else ""
+    if meta.get("locked"):
+        status = f"locked, approved by {meta.get('approved_by') or 'not recorded'}"
+    else:
+        status = "not locked (provisional, not approved)"
     return (f"{result['policy']['name']} | version {meta.get('version', 1)} | "
-            f"fingerprint {result['policy']['fingerprint']} | {status}{who}")
+            f"fingerprint {result['policy']['fingerprint']} | {status}")
 
 
 def summary_rows(result: dict) -> list[list]:
@@ -57,10 +77,21 @@ def excel_bytes(info: dict, result: dict, policy: dict, meta: dict, context: dic
     wb = Workbook()
     head_font, head_fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F3864")
 
+    def put(ws, row, column, value, bold=False):
+        """Write a cell. Entered text is always stored as text, never as a formula."""
+        if value is None or isinstance(value, str):
+            value = clean(value)
+        cell = ws.cell(row=row, column=column, value=value)
+        if isinstance(value, str) and value.startswith(FORMULA_STARTS):
+            cell.data_type = "s"
+        if bold:
+            cell.font = Font(bold=True)
+        return cell
+
     def table(ws, rows, start):
         for r, row in enumerate(rows, start):
             for c, value in enumerate(row, 1):
-                cell = ws.cell(row=r, column=c, value=value)
+                cell = put(ws, r, c, value)
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
                 if r == start:
                     cell.font, cell.fill = head_font, head_fill
@@ -72,26 +103,30 @@ def excel_bytes(info: dict, result: dict, policy: dict, meta: dict, context: dic
     ws["A1"].font = Font(bold=True, size=14)
     r = 3
     for key, label in INFO_LABELS:
-        ws.cell(row=r, column=1, value=label).font = Font(bold=True)
-        ws.cell(row=r, column=2, value=info.get(key, ""))
+        put(ws, r, 1, label, bold=True)
+        put(ws, r, 2, info.get(key))
         r += 1
-    r = table(ws, summary_rows(result), r + 1)
+    put(ws, r + 1, 1, "Research evaluation", bold=True)
+    put(ws, r + 1, 2, result["class"])
+    r += 3
+    if result["scored"]:
+        r = table(ws, summary_rows(result), r)
     for title, items in (("Explanation", result["notes"]), ("For committee attention", result["flags"]),
                          ("Input errors", result["errors"])):
         if items:
-            ws.cell(row=r, column=1, value=title).font = Font(bold=True)
+            put(ws, r, 1, title, bold=True)
             for item in items:
                 r += 1
-                ws.cell(row=r, column=1, value=item)
+                put(ws, r, 1, item)
             r += 2
     for label, text in context.items():
         if text:
-            ws.cell(row=r, column=1, value=f"{label} (recorded, not scored)").font = Font(bold=True)
-            ws.cell(row=r + 1, column=1, value=text)
+            put(ws, r, 1, f"{label} (recorded, not scored)", bold=True)
+            put(ws, r + 1, 1, text).alignment = Alignment(wrap_text=True, vertical="top")
             r += 3
-    ws.cell(row=r, column=1, value="Scoring policy").font = Font(bold=True)
-    ws.cell(row=r + 1, column=1, value=policy_stamp(result, meta))
-    ws.cell(row=r + 2, column=1, value=DISCLAIMER)
+    put(ws, r, 1, "Scoring policy", bold=True)
+    put(ws, r + 1, 1, policy_stamp(result, meta))
+    put(ws, r + 2, 1, DISCLAIMER)
     for col, width in zip("ABCDE", (34, 16, 16, 14, 28)):
         ws.column_dimensions[col].width = width
 
@@ -118,53 +153,81 @@ def excel_bytes(info: dict, result: dict, policy: dict, meta: dict, context: dic
     return buf.getvalue()
 
 
+def pdf_fonts() -> tuple[str, str]:
+    """A regular and bold font. Uses a system font with wide character coverage when one is installed."""
+    if "ReportBody" in pdfmetrics.getRegisteredFontNames():
+        return "ReportBody", "ReportBody-Bold"
+    for regular, bold in SYSTEM_FONTS:
+        if Path(regular).exists() and Path(bold).exists():
+            try:
+                pdfmetrics.registerFont(TTFont("ReportBody", regular))
+                pdfmetrics.registerFont(TTFont("ReportBody-Bold", bold))
+                pdfmetrics.registerFontFamily("ReportBody", normal="ReportBody", bold="ReportBody-Bold",
+                                              italic="ReportBody", boldItalic="ReportBody-Bold")
+            except (TTFError, OSError):
+                continue
+            return "ReportBody", "ReportBody-Bold"
+    return "Helvetica", "Helvetica-Bold"
+
+
 def pdf_bytes(info: dict, result: dict, meta: dict, context: dict) -> bytes:
+    regular, bold = pdf_fonts()
     styles = getSampleStyleSheet()
-    body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=9.5, leading=12.5)
+    body = ParagraphStyle("body", parent=styles["BodyText"], fontName=regular, fontSize=9.5, leading=12.5)
     small = ParagraphStyle("small", parent=body, fontSize=8, leading=10, textColor=colors.grey)
     cell = ParagraphStyle("cell", parent=body, fontSize=8, leading=10)
+    title = ParagraphStyle("title", parent=styles["Title"], fontName=bold)
+    heading = ParagraphStyle("heading", parent=styles["Heading3"], fontName=bold)
     grid = TableStyle([("GRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F3864")),
                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                       ("FONTNAME", (0, 0), (-1, -1), regular),
                        ("FONTSIZE", (0, 0), (-1, -1), 8.5), ("VALIGN", (0, 0), (-1, -1), "TOP")])
+
+    def para(value, style=body) -> Paragraph:
+        return Paragraph(escape(clean(value)).replace("\n", "<br/>"), style)
+
+    def cells(rows: list[list]) -> list[list]:
+        def short(v):
+            text = clean(v)
+            return text if len(text) <= PDF_CELL_LIMIT else text[:PDF_CELL_LIMIT].rstrip() + " [...]"
+        return [[para(short(v), cell) for v in row] for row in rows]
+
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.7 * inch, rightMargin=0.7 * inch,
                             topMargin=0.7 * inch, bottomMargin=0.7 * inch,
                             title="Faculty Research Evaluation Report")
-    story = [Paragraph("Faculty Research Evaluation Report", styles["Title"])]
-    info_rows = [[label, str(info.get(key, "") or "")] for key, label in INFO_LABELS]
-    t = Table(info_rows, colWidths=[2.3 * inch, 4.6 * inch])
-    t.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 9), ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold")]))
-    story += [t, Spacer(1, 10)]
-    story.append(Paragraph(f"<b>Research evaluation: {result['class']}</b>"
+    story = [Paragraph("Faculty Research Evaluation Report", title)]
+    info_rows = [[Paragraph(f"<b>{label}</b>", body), para(info.get(key))] for key, label in INFO_LABELS]
+    story += [Table(info_rows, colWidths=[2.3 * inch, 4.6 * inch]), Spacer(1, 10)]
+    story.append(Paragraph(f"<b>Research evaluation: {escape(result['class'])}</b>"
                            + (f" &nbsp; Overall research score: {result['total']} / 100" if result["scored"] else ""),
-                           styles["Heading3"]))
+                           heading))
     if result["scored"]:
         t = Table(summary_rows(result), colWidths=[2.3 * inch, 1.1 * inch, 1.2 * inch, 1.0 * inch, 1.5 * inch])
         t.setStyle(grid)
         story += [t, Spacer(1, 8)]
-    for title, items in (("Explanation of the outcome", result["notes"]),
-                         ("For committee attention", result["flags"]), ("Input errors", result["errors"])):
+    for heading_text, items in (("Explanation of the outcome", result["notes"]),
+                                ("For committee attention", result["flags"]), ("Input errors", result["errors"])):
         if items:
-            story.append(Paragraph(f"<b>{title}</b>", body))
-            story += [Paragraph(f"&bull; {escape(item)}", body) for item in items]
+            story.append(Paragraph(f"<b>{heading_text}</b>", body))
+            story += [Paragraph(f"&bull; {escape(clean(item))}", body) for item in items]
             story.append(Spacer(1, 6))
     if result["scored"]:
         story.append(Paragraph("<b>How the points were earned</b>", body))
-        rows = [[Paragraph(escape(str(v)), cell) for v in row] for row in conversion_rows(result)]
-        t = Table(rows, colWidths=[1.1 * inch, 0.6 * inch, 0.75 * inch, 0.8 * inch, 0.7 * inch, 0.75 * inch,
-                                   0.6 * inch, 1.8 * inch], repeatRows=1)
+        t = Table(cells(conversion_rows(result)),
+                  colWidths=[1.1 * inch, 0.6 * inch, 0.75 * inch, 0.8 * inch, 0.7 * inch, 0.75 * inch, 0.6 * inch,
+                             1.8 * inch], repeatRows=1)
         t.setStyle(grid)
         story += [t, Spacer(1, 6)]
-        rows = [[Paragraph(escape(str(v)), cell) for v in row[:4]] for row in breakdown_rows(result)]
-        t = Table(rows, colWidths=[1.25 * inch, 1.9 * inch, 3.35 * inch, 0.6 * inch], repeatRows=1)
+        t = Table(cells([row[:4] for row in breakdown_rows(result)]),
+                  colWidths=[1.25 * inch, 1.9 * inch, 3.35 * inch, 0.6 * inch], repeatRows=1)
         t.setStyle(grid)
         story += [t, Spacer(1, 8)]
     for label, text in context.items():
         if text:
-            story += [Paragraph(f"<b>{label}</b> (recorded, not scored)", body), Paragraph(escape(text), body),
-                      Spacer(1, 6)]
-    story += [Spacer(1, 10), Paragraph(f"Scoring policy: {escape(policy_stamp(result, meta))}", small),
+            story += [Paragraph(f"<b>{escape(label)}</b> (recorded, not scored)", body), para(text), Spacer(1, 6)]
+    story += [Spacer(1, 10), para(f"Scoring policy: {policy_stamp(result, meta)}", small),
               Paragraph(DISCLAIMER, small), Spacer(1, 22),
               Paragraph("Evaluator signature: ______________________________ &nbsp;&nbsp; Date: ______________", body)]
     doc.build(story)

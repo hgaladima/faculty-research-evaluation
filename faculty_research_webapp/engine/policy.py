@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 
 GRANT_ROLES = ["PI", "MPI", "Co-PI", "Co-I", "collaborator", "consultant"]
 SUBSTANTIVE_ROLES = ["PI", "MPI", "Co-PI", "Co-I"]
@@ -171,12 +172,47 @@ def minimum_score(policy: dict) -> float:
     return policy["anchor_share"] * sum(policy["weights"].values())
 
 
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _mistyped(policy: dict) -> list[str]:
+    """Settings whose value is blank or of the wrong kind, judged against the Phase 1 preset."""
+    bad = []
+    for key, ref in LEGACY.items():
+        value = policy[key]
+        if key == "chapter_cap":
+            ok = value is None or _is_number(value)
+        elif isinstance(ref, bool):
+            ok = isinstance(value, bool)
+        elif isinstance(ref, (int, float)):
+            ok = _is_number(value)
+        elif isinstance(ref, str):
+            ok = isinstance(value, str) and bool(value.strip())
+        elif isinstance(ref, list):
+            ok = isinstance(value, list)
+        else:
+            ok = isinstance(value, dict)
+            if ok:
+                numeric = all(isinstance(x, (int, float)) for x in ref.values())
+                bad += [f"{key}.{sub}" for sub, x in value.items()
+                        if not (_is_number(x) if numeric else isinstance(x, str))]
+        if not ok:
+            bad.append(key)
+    return bad
+
+
 def check_policy(policy: dict) -> tuple[list[str], list[str]]:
     """Return (errors, warnings). A policy with errors must not be saved."""
     errors, warnings = [], []
+    if not isinstance(policy, dict):
+        return ["The policy is not in the expected format."], []
     missing = [k for k in LEGACY if k not in policy]
     if missing:
         return [f"Missing settings: {', '.join(sorted(missing))}"], []
+    mistyped = _mistyped(policy)
+    if mistyped:
+        return [f"These settings are blank or not valid: {', '.join(mistyped)}. Enter a value for each."], []
 
     w = policy["weights"]
     if any(v < 0 for v in w.values()):

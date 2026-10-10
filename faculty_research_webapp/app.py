@@ -188,10 +188,17 @@ def active_policy() -> dict:
 
 
 def init_state() -> None:
-    if "policy_state" not in st.session_state:
-        st.session_state["policy_state"] = storage.load_policy_state()
-        st.session_state["pol_rev"] = 0
-        st.session_state["draft_base"] = copy.deepcopy(active_policy())
+    disk = storage.load_policy_state()
+    current = st.session_state.get("policy_state")
+    if (current is None or storage.state_key(disk) != storage.state_key(current)
+            or disk["problem"] != current["problem"]):
+        if current is not None:
+            st.session_state["flash"] = ("warning", "The scoring policy was changed in another window. "
+                                                    "This page now shows the saved policy.")
+        st.session_state["policy_state"] = disk
+        st.session_state["pol_rev"] = st.session_state.get("pol_rev", -1) + 1
+        st.session_state["draft_base"] = copy.deepcopy(disk["policy"])
+    if "tables" not in st.session_state:
         st.session_state["loaded_stamp"] = None
         st.session_state["open_file"] = None
         apply_form({"info": {}})
@@ -200,6 +207,15 @@ def init_state() -> None:
         st.session_state["loaded_stamp"] = pending.get("stamp")
         st.session_state["open_file"] = pending.get("file")
         apply_form(pending["form"])
+
+
+def show_notices() -> None:
+    problem = st.session_state["policy_state"]["problem"]
+    if problem:
+        st.error(problem)
+    flash = st.session_state.pop("flash", None)
+    if flash:
+        getattr(st, flash[0])(flash[1])
 
 
 def current_info() -> dict:
@@ -221,9 +237,12 @@ def sidebar() -> None:
     choice = st.sidebar.selectbox("Saved evaluations", saved, index=None, placeholder="Choose a saved evaluation")
     if st.sidebar.button("Open saved evaluation", disabled=choice is None, width="stretch"):
         record = storage.load_evaluation(choice)
-        st.session_state["pending_form"] = {"form": record["form"], "stamp": record["policy"]["fingerprint"],
-                                            "file": choice}
-        st.rerun()
+        if record is None:
+            st.sidebar.error(f"{choice} could not be read. The file may be damaged.")
+        else:
+            st.session_state["pending_form"] = {"form": record["form"], "file": choice,
+                                                "stamp": (record.get("policy") or {}).get("fingerprint")}
+            st.rerun()
     example = st.sidebar.selectbox("Example profiles (hypothetical)", [s["name"] for s in SCENARIOS], index=None,
                                    placeholder="Choose one of the 22 test profiles")
     if st.sidebar.button("Load example profile", disabled=example is None, width="stretch"):
@@ -285,7 +304,7 @@ def tab_grants() -> pd.DataFrame:
     st.subheader("Grants and contracts")
     bands = active_policy()["amount_bands"]
     st.caption(f"One row per proposal, award or continuing project. Enter the total amount for the full project "
-               f"period: under ${bands['minor_max']:,.0f} is minor, ${bands['large_min']:,.0f} or more is large. "
+               f"period: under \\${bands['minor_max']:,.0f} is minor, \\${bands['large_min']:,.0f} or more is large. "
                f"For a proposal submitted and funded in the same year, enter one row as 'Awarded this year' and "
                f"tick 'Also submitted this year'.")
     return editor("grants", {
@@ -368,6 +387,7 @@ def tab_results(form: dict) -> None:
     if stamp and stamp != result["policy"]["fingerprint"]:
         st.warning(f"This evaluation was saved under a different scoring policy (fingerprint {stamp}). "
                    f"The results below use the policy now in force.")
+    identified = bool(info["name"] or info["faculty_id"])
     who = ", ".join(x for x in (info["name"] or "Unnamed faculty member", info["faculty_id"],
                                 info["evaluation_year"]) if x)
 
@@ -375,36 +395,17 @@ def tab_results(form: dict) -> None:
     if cls == INCOMPLETE:
         st.error("The evaluation cannot be calculated until these input errors are fixed:\n\n" +
                  "\n".join(f"- {e}" for e in result["errors"]))
-        return
-    if cls == NOT_EVALUATED:
-        st.warning(f"**{cls}.** " + " ".join(result["notes"]))
-        return
-    if not result["breakdown"] and "rolling" not in fac and not (info["name"] or info["faculty_id"]):
+    elif cls == NOT_EVALUATED:
+        st.warning(f"**{who}: {cls}.** " + " ".join(result["notes"]))
+    elif not result["breakdown"] and "rolling" not in fac and not identified:
         st.html(ui.empty_state("Nothing to evaluate yet",
                                "Enter this year's publications, grants and presentations on the earlier tabs, "
                                "or load one of the example profiles from the sidebar."))
         return
-    st.html(ui.result_instrument(result, policy, who))
-    st.html(ui.notes_block([d["name"] for d in result["domains"].values() if d["status"] == "Exceeds"],
-                           [d["name"] for d in result["domains"].values() if not d["minimum_met"]],
-                           result["notes"], result["flags"], policy["domain_exceeds_level"]))
-
-    st.markdown("#### How the points were earned")
-    st.caption(f"Meeting a domain's minimum earns {policy['anchor_share']:.0%} of its points. Units above the "
-               f"benchmark earn the rest, in proportion, up to the units needed for full excellence credit. "
-               f"Adjustment factor for this evaluation: {result['factor']:g}.")
-    st.dataframe(pd.DataFrame(exports.conversion_rows(result)[1:], columns=exports.conversion_rows(result)[0]),
-                 hide_index=True, width="stretch")
-    for key, d in result["domains"].items():
-        lines = [line for line in result["breakdown"] if line["domain"] == key]
-        with st.expander(f"{d['name']}: {len(lines)} line(s), {d['units']:.2f} units"):
-            if lines:
-                st.dataframe(pd.DataFrame([{"Item": line["item"], "How it was credited": line["detail"],
-                                            "Units": round(line["units"], 3),
-                                            "Counts toward minimum": line["toward_minimum"] or ""}
-                                           for line in lines]), hide_index=True, width="stretch")
-            else:
-                st.write("No activity entered.")
+    else:
+        show_scored_result(result, policy, who)
+    for note in fac["entry_notes"]:
+        st.info(note)
 
     context = {label: info[key] for key, label in CONTEXT_LABELS.items()}
     if any(context.values()):
@@ -412,8 +413,35 @@ def tab_results(form: dict) -> None:
         for label, text in context.items():
             if text:
                 st.markdown(f"**{label}**  \n{text}")
-
     st.caption(f"Scoring policy: {exports.policy_stamp(result, meta).replace(' | ', ', ')}. {exports.DISCLAIMER}")
+    save_and_export(form, result, policy, meta, context)
+
+
+def show_scored_result(result: dict, policy: dict, who: str) -> None:
+    st.html(ui.result_instrument(result, policy, who))
+    st.html(ui.notes_block([d["name"] for d in result["domains"].values() if d["status"] == "Exceeds"],
+                           [d["name"] for d in result["domains"].values() if not d["minimum_met"]],
+                           result["notes"], result["flags"], policy["domain_exceeds_level"]))
+    st.markdown("#### How the points were earned")
+    st.caption(f"Meeting a domain's minimum earns {policy['anchor_share']:.0%} of its points. Units above the "
+               f"benchmark earn the rest, in proportion, up to the units needed for full excellence credit. "
+               f"Adjustment factor for this evaluation: {result['factor']:g}.")
+    conversion = exports.conversion_rows(result)
+    st.dataframe(pd.DataFrame(conversion[1:], columns=conversion[0]), hide_index=True, width="stretch")
+    for key, d in result["domains"].items():
+        lines = [line for line in result["breakdown"] if line["domain"] == key]
+        with st.expander(f"{d['name']}: {len(lines)} line(s), {d['units']:.2f} units"):
+            if lines:
+                st.dataframe(pd.DataFrame([{"Item": line["item"], "How it was credited": line["detail"],
+                                            "Units": round(line["units"], 3),
+                                            "Counts toward minimum": str(line["toward_minimum"] or "")}
+                                           for line in lines]), hide_index=True, width="stretch")
+            else:
+                st.write("No activity entered.")
+
+
+def save_and_export(form: dict, result: dict, policy: dict, meta: dict, context: dict) -> None:
+    info = form["info"]
     identified = bool(info["name"] or info["faculty_id"])
     target = storage.evaluation_name(info)
     other = None if st.session_state.get("open_file") == target else storage.saved_subject(target)
@@ -431,9 +459,15 @@ def tab_results(form: dict) -> None:
                                             "policy_version": meta["version"]})
             st.session_state["loaded_stamp"] = result["policy"]["fingerprint"]
             st.session_state["open_file"] = name
-            st.success(f"Saved as {name}. Reopen it from the sidebar.")
-    pdf, workbook = report_files(json.dumps({"info": info, "result": result, "policy": policy, "meta": meta,
-                                             "context": context}, sort_keys=True, default=str))
+            st.session_state["flash"] = ("success", f"Saved as {name}. It is now in the sidebar list.")
+            st.rerun()
+    try:
+        pdf, workbook = report_files(json.dumps({"info": info, "result": result, "policy": policy, "meta": meta,
+                                                 "context": context}, sort_keys=True, default=str))
+    except Exception as exc:  # the report libraries raise many unrelated error types
+        st.error(f"The report could not be built ({type(exc).__name__}: {exc}). The evaluation can still be "
+                 f"saved. Shorten or retype the entry edited most recently, then try again.")
+        return
     file_stub = f"research_evaluation_{target}"
     b.download_button("Download report (PDF)", pdf, f"{file_stub}.pdf", "application/pdf", width="stretch")
     c.download_button("Download report (Excel)", workbook, f"{file_stub}.xlsx",
@@ -486,9 +520,13 @@ def impact_preview(old: dict, new: dict) -> pd.DataFrame:
     rows = []
     profiles = [(s["name"], lambda p, s=s: s) for s in SCENARIOS]
     for name in storage.list_evaluations():
-        f = storage.load_evaluation(name)["form"]
+        record = storage.load_evaluation(name)
+        if record is None:
+            continue
+        f = record["form"]
         profiles.append((f"Saved: {name}", lambda p, f=f: forms.build_faculty(
-            f["info"], f["pubs"], f["grants"], f["pres"], f["editorial"], f["reviews"], p)[0]))
+            f["info"], f.get("pubs", []), f.get("grants", []), f.get("pres", []), f.get("editorial", []),
+            f.get("reviews", []), p)[0]))
     for name, build in profiles:
         before, after = evaluate(build(old), old), evaluate(build(new), new)
         rows.append({"Profile": name, "Score now": before["total"], "Score after": after["total"],
@@ -512,7 +550,11 @@ def tab_policy() -> None:
             who = st.text_input("Your name", key="unlock_who")
             reason = st.text_area("Reason for reopening the policy", key="unlock_reason")
             if st.button("Unlock", disabled=not (who.strip() and reason.strip())):
-                st.session_state["policy_state"] = storage.unlock_policy(state, who=who.strip(), reason=reason.strip())
+                try:
+                    st.session_state["policy_state"] = storage.unlock_policy(state, who=who.strip(),
+                                                                            reason=reason.strip())
+                except storage.PolicyConflict as conflict:
+                    st.session_state["flash"] = ("error", str(conflict))
                 st.rerun()
     else:
         st.warning("This policy is not locked. Its values are provisional defaults until the committee approves them.")
@@ -544,15 +586,18 @@ def tab_policy() -> None:
                 edited = st.data_editor(frame, key=f"pol_{st.session_state['pol_rev']}_{name}", hide_index=True,
                                         disabled=["Item"] if not locked else True, width="stretch",
                                         column_config={"Value": st.column_config.NumberColumn(format="%g")})
-                draft[name] = {k: float(v) for k, v in zip(edited["Item"], edited["Value"])}
+                draft[name] = {k: float("nan") if pd.isna(v) else float(v)
+                               for k, v in zip(edited["Item"], edited["Value"])}
     draft = normalise(draft)
-    draft["pub_min_count"] = int(draft["pub_min_count"])
+    if isinstance(draft["pub_min_count"], float) and draft["pub_min_count"].is_integer():
+        draft["pub_min_count"] = int(draft["pub_min_count"])
 
     errors, warnings = check_policy(draft)
     changes = diff(saved, draft)
     st.markdown("#### Check and preview")
-    st.write(f"Fingerprint of the settings shown: `{fingerprint(draft)}`. Meeting every minimum earns "
-             f"{minimum_score(draft):g} points under these settings.")
+    if not errors:
+        st.write(f"Fingerprint of the settings shown: `{fingerprint(draft)}`. Meeting every minimum earns "
+                 f"{minimum_score(draft):g} points under these settings.")
     for e in errors:
         st.error(e)
     for w in warnings:
@@ -572,27 +617,34 @@ def tab_policy() -> None:
     if not locked:
         st.markdown("#### Approve and lock")
         a, b = st.columns(2)
-        who = a.text_input("Approved by (name and role)", key="approve_who")
+        who = a.text_input("Your name and role (recorded as the approver when locking)", key="approve_who")
         year = b.text_input("Evaluation year this policy applies to", value=str(date.today().year), key="approve_year")
         note = st.text_input("Note for the change log (for example, the committee meeting date)", key="approve_note")
         a, b = st.columns(2)
-        if a.button("Save and lock policy", type="primary", disabled=bool(errors) or not who.strip(), width="stretch"):
-            st.session_state["policy_state"] = storage.save_policy(state, draft, who=who.strip(), year=year.strip(),
-                                                                  note=note.strip(), lock=True)
-            st.session_state["draft_base"] = copy.deepcopy(draft)
-            st.rerun()
-        if b.button("Save as working draft (not locked)", disabled=bool(errors) or not changes, width="stretch"):
-            st.session_state["policy_state"] = storage.save_policy(state, draft, who=who.strip() or "not recorded",
-                                                                  year=year.strip(), note=note.strip(), lock=False)
-            st.session_state["draft_base"] = copy.deepcopy(draft)
+        blocked = bool(errors) or not who.strip()
+        lock = a.button("Approve and lock policy", type="primary", disabled=blocked, width="stretch")
+        keep = b.button("Save as working draft (not locked)", disabled=blocked or not changes, width="stretch")
+        if not who.strip():
+            st.caption("Enter your name above to save. Every change to the policy is logged with a name.")
+        if lock or keep:
+            try:
+                st.session_state["policy_state"] = storage.save_policy(state, draft, who=who.strip(),
+                                                                      year=year.strip(), note=note.strip(), lock=lock)
+                st.session_state["draft_base"] = copy.deepcopy(draft)
+                st.session_state["flash"] = ("success", "Policy approved and locked." if lock
+                                             else "Working draft saved. It is not approved or locked.")
+            except storage.PolicyConflict as conflict:
+                st.session_state["flash"] = ("error", str(conflict))
             st.rerun()
     st.download_button("Download the saved policy (JSON)", to_json(saved), "scoring_policy.json", "application/json")
     log = storage.read_log()
     with st.expander(f"Change log ({len(log)} entries)"):
         if log:
-            st.dataframe(pd.DataFrame([{"When": e["when"], "Who": e["who"], "Action": e["action"],
-                                        "Version": e["version"], "Fingerprint": e["fingerprint"],
-                                        "Settings changed": len(e["changes"]), "Note": e["note"]} for e in log]),
+            st.dataframe(pd.DataFrame([{"When": e.get("when", ""), "Who": e.get("who", ""),
+                                        "Action": e.get("action", ""), "Version": str(e.get("version", "")),
+                                        "Fingerprint": e.get("fingerprint", ""),
+                                        "Settings changed": len(e.get("changes", [])), "Note": e.get("note", "")}
+                                       for e in log]),
                          hide_index=True, width="stretch")
         else:
             st.write("No changes recorded yet.")
@@ -628,6 +680,7 @@ def main() -> None:
     sidebar()
     st.html(ui.masthead(st.session_state["info_name"], st.session_state["info_faculty_id"],
                         st.session_state["info_evaluation_year"]))
+    show_notices()
     tabs = st.tabs(["Faculty", "Publications", "Grants", "Presentations", "Other activity", "Results",
                     "Scoring policy", "Guide"])
     with tabs[0]:

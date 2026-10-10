@@ -13,12 +13,12 @@ PUB_TYPES = {
 JOURNAL_TIERS = {"Tier 1": 1, "Tier 2": 2, "Tier 3": 3, "Questionable venue (not credited)": 0,
                  "Not yet verified": None}
 AUTHORSHIP = {"Sole or first author": "lead", "Senior (last) author": "lead", "Corresponding author": "lead",
-              "Second author": "second", "Other coauthor": "coauthor"}
+              "Second author": "second", "Other coauthor": "coauthor", "Not yet verified": None}
 QUARTILES = ["Q1", "Q2", "Q3", "Q4", "Not ranked"]
 
 GRANT_SOURCES = ["External", "Internal"]
 GRANT_ROLES = {"PI": "PI", "MPI": "MPI", "Co-PI": "Co-PI", "Co-I": "Co-I",
-               "Collaborator": "collaborator", "Consultant": "consultant"}
+               "Collaborator": "collaborator", "Consultant": "consultant", "Not yet verified": None}
 SUBMITTED, AWARDED, ACTIVE = ("Submitted (pending or not funded)", "Awarded this year",
                               "Active (awarded in a prior year)")
 GRANT_STATUSES = [SUBMITTED, AWARDED, ACTIVE]
@@ -32,7 +32,7 @@ PRES_TYPES = {
 VENUE_TIERS = {"Tier A": "A", "Tier B": "B", "Tier C": "C", "Questionable (not credited)": "0",
                "Not yet verified": None}
 PRES_ROLES = {"Presenter": "presenter", "Mentor of student presenter": "mentor",
-              "Coauthor (not presenting)": "coauthor"}
+              "Coauthor (not presenting)": "coauthor", "Not yet verified": None}
 PRES_SCOPES = ["International", "National", "Regional", "State or local", "Institutional"]
 LOCAL_PRES = {"institutional", "outreach", "seminar"}
 
@@ -100,7 +100,7 @@ def build_faculty(info: dict, pubs: list[dict], grants: list[dict], pres: list[d
         "months_active": 12 if _blank(info.get("months_active")) else info["months_active"],
         "first_year": bool(info.get("first_year", False)),
         "publications": [], "submissions": [], "awards": [], "active_projects": [], "presentations": [],
-        "editorial": [], "grant_reviews": [],
+        "editorial": [], "grant_reviews": [], "entry_notes": [],
     }
     for key in ("sessions_chaired", "proposals_in_development", "unfunded_projects",
                 "manuscripts_under_review", "abstracts_submitted"):
@@ -131,7 +131,8 @@ def build_faculty(info: dict, pubs: list[dict], grants: list[dict], pres: list[d
                 problems.append(f"{where}: choose the authorship role.")
                 continue
             role = AUTHORSHIP[row["Authorship"]]
-            item["role"] = role if role in policy["author_role_mult"] else "coauthor"
+            if role is not None:
+                item["role"] = role if role in policy["author_role_mult"] else "coauthor"
         if _flag(row.get("Student or mentee first author")):
             item["student_first"] = True
         if _whole(row.get("Documented impacts")):
@@ -151,7 +152,13 @@ def build_faculty(info: dict, pubs: list[dict], grants: list[dict], pres: list[d
             problems.append(f"{where}: choose a status and a role.")
             continue
         role, title = GRANT_ROLES[role_label], _text(row.get("Title"))
+        also_submitted = _flag(row.get("Also submitted this year"))
+        prior_year = _flag(row.get("Credited in a prior year"))
         if status == ACTIVE:
+            if also_submitted:
+                problems.append(f"{where}: a project awarded in a prior year cannot also be 'submitted this year'. "
+                                f"Untick the box, or add a separate row for the new submission.")
+                continue
             fac["active_projects"].append({"role": role, "title": title})
             continue
         source = "External" if _blank(row.get("Source")) else row["Source"]
@@ -164,13 +171,16 @@ def build_faculty(info: dict, pubs: list[dict], grants: list[dict], pres: list[d
                  "competitive": _flag(row.get("Competitive"), True)}
         if amount is not None and size != "internal":
             entry["amount"] = amount
-        if status == SUBMITTED or _flag(row.get("Also submitted this year")):
+        if prior_year:
+            fac["entry_notes"].append(f"{where}{f' ({title})' if title else ''}: marked as credited in a prior "
+                                      f"year, so it earns no credit this year.")
+            if status == AWARDED:
+                fac["awards"].append(dict(entry, counted_in_prior_year=True))
+            continue
+        if status == SUBMITTED or also_submitted:
             fac["submissions"].append(dict(entry, scored=_flag(row.get("Scored or discussed"))))
         if status == AWARDED:
-            award = dict(entry)
-            if _flag(row.get("Credited in a prior year")):
-                award["counted_in_prior_year"] = True
-            fac["awards"].append(award)
+            fac["awards"].append(dict(entry))
 
     for i, row in enumerate(pres, 1):
         if all(_blank(row.get(c)) for c in ("Title", "Type", "Meeting")):
@@ -180,7 +190,9 @@ def build_faculty(info: dict, pubs: list[dict], grants: list[dict], pres: list[d
             problems.append(f"{where}: choose a presentation type and a role.")
             continue
         t = PRES_TYPES[row["Type"]]
-        item = {"type": t, "title": _text(row.get("Title")), "role": PRES_ROLES[row["Role"]]}
+        item = {"type": t, "title": _text(row.get("Title"))}
+        if PRES_ROLES[row["Role"]] is not None:
+            item["role"] = PRES_ROLES[row["Role"]]
         if t not in LOCAL_PRES:
             if _blank(row.get("Venue tier")):
                 problems.append(f"{where}: choose a venue tier (or 'Not yet verified').")
@@ -206,8 +218,8 @@ def rows_from_faculty(fac: dict) -> dict:
     pubs = []
     for p in fac.get("publications", []):
         t = p.get("type", "article")
-        role = p.get("role", "coauthor" if t == "article" else "lead")
-        tier = p.get("tier") if "tier" in p else (3 if t == "article" else None)
+        role = p.get("role", "coauthor") if t == "article" else p.get("role")
+        tier = p.get("tier")
         pubs.append({
             "Title": p.get("title", ""), "Journal or publisher": "", "Type": _reverse(PUB_TYPES, t),
             "Peer reviewed": p.get("peer_reviewed", True),
@@ -219,23 +231,28 @@ def rows_from_faculty(fac: dict) -> dict:
             "Credited in a prior year": bool(p.get("counted_in_prior_year", False)),
         })
 
-    def grant_row(g, status):
+    def grant_row(g, status, also_submitted=False, scored=False):
         size = g.get("size")
         return {"Title": g.get("title", ""), "Funder": "",
                 "Source": "Internal" if size == "internal" else "External",
                 "Total amount ($)": g.get("amount", REPRESENTATIVE_AMOUNT.get(size)),
-                "Role": _reverse(GRANT_ROLES, g.get("role", "collaborator")),
+                "Role": _reverse(GRANT_ROLES, g.get("role")),
                 "Competitive": g.get("competitive", True), "Status": status,
-                "Also submitted this year": False, "Scored or discussed": bool(g.get("scored", False)),
+                "Also submitted this year": also_submitted,
+                "Scored or discussed": bool(g.get("scored", False)) or scored,
                 "Credited in a prior year": bool(g.get("counted_in_prior_year", False))}
 
-    grants = ([grant_row(s, SUBMITTED) for s in fac.get("submissions", [])] +
-              [grant_row(a, AWARDED) for a in fac.get("awards", [])] +
+    awards = fac.get("awards", [])
+    funded = {a["id"]: s for a in awards if a.get("id") and not a.get("counted_in_prior_year")
+              for s in fac.get("submissions", []) if s.get("id") == a["id"]}
+    grants = ([grant_row(s, SUBMITTED) for s in fac.get("submissions", []) if s.get("id") not in funded] +
+              [grant_row(a, AWARDED, a.get("id") in funded, bool(funded.get(a.get("id"), {}).get("scored")))
+               for a in awards] +
               [grant_row(p, ACTIVE) for p in fac.get("active_projects", [])])
     pres = [{"Title": p.get("title", ""), "Meeting": "", "Location (info)": "", "Scope (info)": None,
              "Type": _reverse(PRES_TYPES, p["type"]),
-             "Venue tier": None if p["type"] in LOCAL_PRES else _reverse(VENUE_TIERS, p.get("venue", "B")),
-             "Role": _reverse(PRES_ROLES, p.get("role", "presenter")),
+             "Venue tier": None if p["type"] in LOCAL_PRES else _reverse(VENUE_TIERS, p.get("venue")),
+             "Role": _reverse(PRES_ROLES, p.get("role")),
              "Peer-reviewed abstract (info)": False}
             for p in fac.get("presentations", [])]
     editorial = [{"Role": _reverse(EDITORIAL_ROLES, e["role"]), "Count": e.get("n", 1)}
