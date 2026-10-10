@@ -4,6 +4,8 @@ A locally run tool for the annual review of faculty research and scholarship. En
 
 It is a decision aid. The scoring policy it ships with is provisional until the annual review committee adopts it; see `../PROVISIONAL_POLICY.md`.
 
+The same rules are also available as an Excel workbook with no macros, `../faculty_research_calculator.xlsx`, and there is a guide for faculty and administrators, `../user_guide.pdf`.
+
 ## Run it
 
 Requires Python 3.11 or later.
@@ -53,6 +55,10 @@ The tests include an exact reproduction of the Phase 1 results: under the "Phase
 | `exports.py` | PDF and Excel reports |
 | `policy_labels.py` | Plain-language label for every policy setting |
 | `tools/write_policy_tables.py` | Regenerates section 8 of the policy note |
+| `tools/build_excel_calculator.py` | Generates `faculty_research_calculator.xlsx` |
+| `tools/validate_excel.py`, `tools/excel_com.py` | Check the calculator against the engine in real Excel |
+| `tools/build_validation_workbook.py` | Generates `faculty_evaluation_validation.xlsx` |
+| `tools/build_user_guide.py`, `guide_images/` | Generate `user_guide.pdf` |
 | `app.py` | The screens |
 | `ui.py`, `.streamlit/config.toml` | Styling: theme, stylesheet and the result panel |
 | `static/` | Bundled typefaces (Public Sans and Newsreader, SIL Open Font License) |

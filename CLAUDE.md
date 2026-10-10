@@ -16,7 +16,11 @@ Document map, in order of authority:
 - `research_eval.py.txt`, `scenarios.py.txt`, `sensitivity.py.txt` – the original Phase 1 engine. **Do not edit them**: the tests load them as the reference that the "Phase 1 original" preset must reproduce.
 - `prompt1.md` – unrelated (a docs-editor PRD). Ignore it.
 
-Not built yet from Phase 2: the Excel calculator, the validation workbook and the user guide PDF.
+Generated deliverables at the repo root. Never edit them by hand; change the generator and rebuild:
+
+- `faculty_research_calculator.xlsx` – the engine as Excel formulas (no macros), from `tools/build_excel_calculator.py`.
+- `faculty_evaluation_validation.xlsx` – Python vs Excel vs web app, from `tools/build_validation_workbook.py`.
+- `user_guide.pdf` – from `tools/build_user_guide.py`; its numbers come from the policy and its worked example from the engine. The screenshots in `guide_images/` are captured by hand from the running app.
 
 ## Commands
 
@@ -29,6 +33,11 @@ python -m pytest                          # all tests
 python -m pytest tests/test_engine.py -k "2_5"    # one test, by finding number or name
 python -m engine.sensitivity              # Phase 1 vs provisional on the 22 scenarios
 python -m tools.write_policy_tables       # regenerate section 8 of PROVISIONAL_POLICY.md
+python -m tools.build_excel_calculator    # rebuild the Excel calculator
+python -m tools.validate_excel 40         # Excel vs engine, in real Excel (Windows; about 1 s per case)
+python -m tools.build_validation_workbook # rebuild the validation workbook (about 15 minutes)
+python -m tools.build_user_guide          # rebuild the user guide PDF
+FRE_EXCEL=1 python -m pytest tests/test_excel_calculator.py   # include the tests that drive Excel
 ```
 
 ## Architecture
@@ -58,6 +67,8 @@ The governing rule: **a scoring change is a new policy key whose `LEGACY` value 
 `fingerprint(policy)` is a short hash of the scoring settings, printed on every report. It ignores the policy name, treats 10000 and 10000.0 as equal (the settings widgets return floats), and treats `True` and `1` as different.
 
 **App layers.** `app.py` (Streamlit screens) → `forms.py` (entry tables ↔ engine record; `rows_from_faculty` is the inverse of `build_faculty`, and a test round-trips all 22 scenarios through both) → `engine`. `storage.py` writes the active policy, its change log and saved evaluations under `data/` (git-ignored; personnel data). `exports.py` builds the PDF and Excel reports.
+
+**Excel calculator.** The scoring rules exist in three places that must agree: `engine/research_eval.py`, `forms.build_faculty` (how an entry row becomes engine input) and the formulas written by `tools/build_excel_calculator.py`. A rule change must be made in all three, then checked with `python -m tools.validate_excel`, which types cases into the workbook through Excel (COM) and compares every score, class and minimum with the engine under four policies that between them flip every switch. The workbook mirrors the web entry form, not the raw engine record: one grant row with a Status, exactly as `forms.py` defines it. Settings are named cells (`s_<policy key>`), per-row calculations are named columns (`PUB_`, `GRA_`, `PRE_`), and each step of `evaluate` is one named line on the Calc sheet (`c_...`). Use only functions available since Excel 2007 (no LET, XLOOKUP, IFS or TEXTJOIN). Excel rounds half up only, so the unmodified Phase 1 preset cannot be reproduced there. Excel refuses to open a workbook containing one syntactically invalid formula; `tests/test_excel_calculator.py` checks brackets and names without needing Excel.
 
 **Look and feel.** Base colours, radius and typefaces come from `.streamlit/config.toml`; `ui.stylesheet` reads them through `st.get_option`, so do not hard-code a theme colour in `ui.py` (only the green, amber and red status colours live there). `ui.py` also holds the hand-built HTML (masthead, sidebar policy card, result panel), injected with `st.html`. The sentence under the classification comes from `ui.result_reason`, which switches on the engine's `class_basis`; add a branch there whenever the engine gains a new way to reach a class. Every user-entered string passed into that HTML must go through `html.escape`. The two typefaces (Public Sans, Newsreader; both SIL Open Font License) are bundled in `static/` and served by Streamlit's static serving, so the app works offline. The result panel is the one deliberately bold element: a 0-100 scale with the Meets and Exceeds thresholds, and per-domain bars with a line at the points earned by meeting the minimum.
 

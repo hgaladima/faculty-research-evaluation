@@ -70,7 +70,7 @@ Each row is a setting on the Scoring policy tab.
 | Finding | Provisional rule | Phase 1 | Basis |
 |---|---|---|---|
 | 6.5 | Anything not yet verified is treated the least generous way and flagged: journal Tier 3, venue Tier C, presentation role coauthor, book role coauthor, grant role collaborator | Mixed: some defaults generous, most unflagged | Consistency |
-| 6.6 | Scores round half up. The overall score is the rounded true total; where the three displayed domain scores would not add up to it, one of them is shown 0.1 higher or lower | Rounded separately, so parts did not always add up | Half-up is the rule Excel's ROUND uses; the report must add up, and meeting every minimum must show exactly 70 under any weights |
+| 6.6 | Scores round half up (the Excel calculator can only round this way). The overall score is the rounded true total; where the three displayed domain scores would not add up to it, one of them is shown 0.1 higher or lower | Rounded separately, so parts did not always add up | Half-up is the rule Excel's ROUND uses; the report must add up, and meeting every minimum must show exactly 70 under any weights |
 
 ## 4. Definitions applied
 
