@@ -48,3 +48,5 @@ The tests include an exact reproduction of the Phase 1 results: under the "Phase
 | `storage.py` | Policy, change log and saved evaluations on disk |
 | `exports.py` | PDF and Excel reports |
 | `app.py` | The screens |
+| `ui.py`, `.streamlit/config.toml` | Styling: theme, stylesheet and the result panel |
+| `static/` | Bundled typefaces (Public Sans and Newsreader, SIL Open Font License) |

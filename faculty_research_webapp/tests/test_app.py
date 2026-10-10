@@ -66,5 +66,5 @@ def test_app_runs_and_scores_an_example(tmp_path, monkeypatch):
     at.sidebar.selectbox[1].select("S19 Exceptional across all domains").run()
     at.sidebar.button[2].click().run()
     assert not at.exception, at.exception
-    shown = " ".join(m.value for m in at.success)
-    assert "Exceeds Expectations" in shown and "100" in shown
+    shown = " ".join(h.proto.body for h in at.get("html"))
+    assert "Exceeds Expectations" in shown and 'data-score="100"' in shown

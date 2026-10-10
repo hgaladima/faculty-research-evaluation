@@ -1,0 +1,44 @@
+[server]
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#1D4E89"
+backgroundColor = "#F3F5F8"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#14202B"
+linkColor = "#1D4E89"
+borderColor = "#D5DCE4"
+dataframeBorderColor = "#E3E8EE"
+dataframeHeaderBackgroundColor = "#EDF1F5"
+showWidgetBorder = true
+baseRadius = "0.5rem"
+font = "Public Sans, sans-serif"
+headingFont = "Newsreader, serif"
+headingFontWeights = 500
+baseFontSize = 15
+
+[[theme.fontFaces]]
+family = "Public Sans"
+url = "app/static/PublicSans-latin.woff2"
+weight = "100 900"
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Newsreader"
+url = "app/static/Newsreader-latin.woff2"
+weight = "200 800"
+style = "normal"
+
+[theme.sidebar]
+backgroundColor = "#12202C"
+secondaryBackgroundColor = "#1C2E3E"
+textColor = "#E6ECF2"
+borderColor = "#31465A"
+primaryColor = "#8DB8E8"

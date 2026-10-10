@@ -11,10 +11,11 @@ import streamlit as st
 import exports
 import forms
 import storage
+import ui
 from engine import PRESETS, check_policy, evaluate, fingerprint
 from engine.policy import (EXCEEDS_RULES, GRANT_ROLES, PRES_ROLES, REDUCED_RULES, ROLLING_BENCHMARKS,
                            ROUNDING_MODES, diff, minimum_score, normalise, to_json)
-from engine.research_eval import DOES_NOT_MEET, EXCEEDS, INCOMPLETE, MEETS, NOT_EVALUATED
+from engine.research_eval import INCOMPLETE, NOT_EVALUATED
 from engine.scenarios import SCENARIOS
 
 POLICY_NOTE = Path(__file__).resolve().parent.parent / "PROVISIONAL_POLICY.md"
@@ -51,7 +52,6 @@ JOURNAL_TIER_HELP = ("Tier 1: top quartile (Q1) of its subject category, or the 
 VENUE_TIER_HELP = ("Tier A: major national or international society meeting with competitive peer-reviewed "
                    "abstract selection. Tier B: regional or state society meeting, or a national meeting with "
                    "light review. Tier C: local meeting or limited review. Quality counts more than geography.")
-STATUS_ICON = {"Exceeds": "🟢", "Meets": "🟢", "Approaching": "🟡", "Not met": "🔴"}
 
 OPTION_LABELS = {
     "total": "Score at or above the Exceeds threshold",
@@ -206,17 +206,11 @@ def current_info() -> dict:
 # ------------------------------------------------------------------------------- sidebar
 def sidebar() -> None:
     meta = st.session_state["policy_state"]["meta"]
-    st.sidebar.title("Faculty Research Evaluation")
-    st.sidebar.caption("Decision aid for the annual review of research and scholarship.")
-    st.sidebar.subheader("Scoring policy in force")
-    st.sidebar.write(f"**{active_policy()['policy_name']}**")
-    st.sidebar.write(f"Version {meta['version']} · fingerprint `{fingerprint(active_policy())}`")
-    if meta["locked"]:
-        st.sidebar.success(f"Locked · approved by {meta['approved_by'] or 'not recorded'}")
-    else:
-        st.sidebar.warning("Not locked. Provisional until approved on the Scoring Policy tab.")
-
-    st.sidebar.subheader("Evaluation file")
+    st.sidebar.html(ui.sidebar_brand())
+    st.sidebar.markdown("**Scoring policy in force**")
+    st.sidebar.html(ui.policy_card(active_policy()["policy_name"], meta["version"], fingerprint(active_policy()),
+                                   meta["locked"], meta["approved_by"]))
+    st.sidebar.markdown("**Evaluation file**")
     if st.sidebar.button("New blank evaluation", width="stretch"):
         st.session_state["pending_form"] = {"form": {"info": {}}, "stamp": None}
         st.rerun()
@@ -361,7 +355,6 @@ def tab_results(form: dict) -> None:
     info = form["info"]
     fac, problems = forms.build_faculty(info, form["pubs"], form["grants"], form["pres"], form["editorial"],
                                         form["reviews"], policy)
-    st.subheader("Evaluation results")
     if problems:
         st.error("Complete these entries before the evaluation can be calculated:\n\n" +
                  "\n".join(f"- {p}" for p in problems))
@@ -371,9 +364,8 @@ def tab_results(form: dict) -> None:
     if stamp and stamp != result["policy"]["fingerprint"]:
         st.warning(f"This evaluation was saved under a different scoring policy (fingerprint {stamp}). "
                    f"The results below use the policy now in force.")
-    who = " · ".join(x for x in (info["name"] or "Unnamed faculty member", info["faculty_id"],
-                                 info["evaluation_year"]) if x)
-    st.markdown(f"**{who}**")
+    who = ", ".join(x for x in (info["name"] or "Unnamed faculty member", info["faculty_id"],
+                                info["evaluation_year"]) if x)
 
     cls = result["class"]
     if cls == INCOMPLETE:
@@ -383,39 +375,15 @@ def tab_results(form: dict) -> None:
     if cls == NOT_EVALUATED:
         st.warning(f"**{cls}.** " + " ".join(result["notes"]))
         return
-    headline = f"**{cls}** · overall research score {result['total']:g} / 100"
-    if cls == EXCEEDS:
-        st.success("🟢 " + headline)
-    elif cls == MEETS:
-        st.success("🟢 " + headline)
-    elif result["approaching"]:
-        st.warning("🟡 " + headline + " · approaching expectations: one minimum is unmet")
-    else:
-        st.error("🔴 " + headline)
-
-    cols = st.columns(4)
-    cols[0].metric("Overall score (of 100)", f"{result['total']:g}")
-    for col, d in zip(cols[1:], result["domains"].values()):
-        col.metric(d["name"], f"{d['score']:g} / {d['max']:g}")
-
-    st.markdown("#### Scoring dashboard")
-    for d in result["domains"].values():
-        a, b, c = st.columns([3, 5, 4])
-        a.markdown(f"{STATUS_ICON[d['status']]} **{d['name']}**  \n{d['status']}")
-        b.progress(min(1.0, d["share"]), text=f"{d['score']:g} of {d['max']:g} points")
-        c.markdown(("✅ Minimum met: " if d["minimum_met"] else "❌ Minimum not met") +
-                   (d["minimum_basis"] if d["minimum_met"] else ""))
-
-    strengths = [d["name"] for d in result["domains"].values() if d["status"] == "Exceeds"]
-    needs = [d["name"] for d in result["domains"].values() if not d["minimum_met"]]
-    a, b = st.columns(2)
-    a.markdown("**Areas of strength**  \n" + (", ".join(strengths) if strengths else "None above the "
-               f"{policy['domain_exceeds_level']:.0%} level this year"))
-    b.markdown("**Areas requiring improvement**  \n" + (", ".join(needs) if needs else "All minimum expectations met"))
-    if result["notes"]:
-        st.markdown("**Explanation of the outcome**\n\n" + "\n".join(f"- {n}" for n in result["notes"]))
-    if result["flags"]:
-        st.markdown("**For committee attention**\n\n" + "\n".join(f"- {f}" for f in result["flags"]))
+    if not result["breakdown"] and "rolling" not in fac:
+        st.html(ui.empty_state("Nothing to evaluate yet",
+                               "Enter this year's publications, grants and presentations on the earlier tabs, "
+                               "or load one of the example profiles from the sidebar."))
+        return
+    st.html(ui.result_instrument(result, policy, who))
+    st.html(ui.notes_block([d["name"] for d in result["domains"].values() if d["status"] == "Exceeds"],
+                           [d["name"] for d in result["domains"].values() if not d["minimum_met"]],
+                           result["notes"], result["flags"], policy["domain_exceeds_level"]))
 
     st.markdown("#### How the points were earned")
     st.caption(f"Meeting a domain's minimum earns {policy['anchor_share']:.0%} of its points. Units above the "
@@ -441,11 +409,11 @@ def tab_results(form: dict) -> None:
             if text:
                 st.markdown(f"**{label}**  \n{text}")
 
-    st.caption(f"Scoring policy: {exports.policy_stamp(result, meta)}. {exports.DISCLAIMER}")
+    st.caption(f"Scoring policy: {exports.policy_stamp(result, meta).replace(' | ', ', ')}. {exports.DISCLAIMER}")
     a, b, c = st.columns(3)
     if a.button("Save evaluation", type="primary", width="stretch"):
         if not (info["name"] or info["faculty_id"]):
-            st.error("Enter a faculty name or ID on the Faculty Information tab before saving.")
+            st.error("Enter a faculty name or ID on the Faculty tab before saving.")
         else:
             name = storage.save_evaluation({"form": form, "result": result, "policy": result["policy"],
                                             "policy_version": meta["version"]})
@@ -618,7 +586,7 @@ def tab_guide() -> None:
 - **Minimums first.** Each domain has a minimum expectation. Meeting it earns {policy['anchor_share']:.0%} of the
   domain's points; work above the minimum earns the rest.
 - **Classification.** Any unmet minimum gives *Does Not Meet Expectations*. With all minimums met the result is
-  *Meets Expectations*, or *Exceeds Expectations* under the rule shown on the Scoring Policy tab
+  *Meets Expectations*, or *Exceeds Expectations* under the rule shown on the Scoring policy tab
   (threshold {policy['exceeds_threshold']:g}).
 - **This tool is a decision aid.** It does not replace the chair's written evaluation or the faculty member's
   narrative on quality, impact and value.
@@ -633,11 +601,14 @@ def tab_guide() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Faculty Research Evaluation", page_icon="📊", layout="wide")
+    st.set_page_config(page_title="Faculty Research Evaluation", page_icon=":material/school:", layout="wide")
     init_state()
+    st.html(ui.CSS)
     sidebar()
-    tabs = st.tabs(["1 Faculty Information", "2 Publications", "3 Grants and Contracts", "4 Presentations",
-                    "5 Other Scholarly Activities", "6 Evaluation Results", "7 Scoring Policy", "Guide"])
+    st.html(ui.masthead(st.session_state["info_name"], st.session_state["info_faculty_id"],
+                        st.session_state["info_evaluation_year"]))
+    tabs = st.tabs(["Faculty", "Publications", "Grants", "Presentations", "Other activity", "Results",
+                    "Scoring policy", "Guide"])
     with tabs[0]:
         tab_info()
     with tabs[1]:

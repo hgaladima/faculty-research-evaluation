@@ -55,6 +55,8 @@ The governing rule: **a scoring change is a new policy key whose `LEGACY` value 
 
 **App layers.** `app.py` (Streamlit screens) → `forms.py` (entry tables ↔ engine record; `rows_from_faculty` is the inverse of `build_faculty`, and a test round-trips all 22 scenarios through both) → `engine`. `storage.py` writes the active policy, its change log and saved evaluations under `data/` (git-ignored; personnel data). `exports.py` builds the PDF and Excel reports.
 
+**Look and feel.** Colours, radius and typefaces come from `.streamlit/config.toml`; `ui.py` holds the stylesheet and the hand-built HTML (masthead, sidebar policy card, result panel), injected with `st.html`. Every user-entered string passed into that HTML must go through `html.escape`. The two typefaces (Public Sans, Newsreader; both SIL Open Font License) are bundled in `static/` and served by Streamlit's static serving, so the app works offline. The result panel is the one deliberately bold element: a 0-100 scale with the Meets and Exceeds thresholds, and per-domain bars with a line at the points earned by meeting the minimum.
+
 Streamlit state: each entry table's base DataFrame lives in `st.session_state["tables"]` and the editor key carries a revision number. Loading a form goes through `pending_form` plus `st.rerun()` so widget state is set before the widgets exist. Do not write the editor's return value back into `tables`.
 
 The Scoring Policy tab builds a `draft` from the widgets on every run and compares it with the saved policy; a locked policy renders the same widgets disabled.
