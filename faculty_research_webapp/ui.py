@@ -27,6 +27,8 @@ RULES = """
   --track: color-mix(in srgb, var(--ink) 9%, var(--surface));
   --side-muted: color-mix(in srgb, var(--side-text) 65%, var(--side-surface)); }
 .block-container { padding-top: 2.2rem; padding-bottom: 4rem; max-width: 1180px; }
+/* A hosted deployment fills the header with an opaque toolbar; clear it */
+.stApp:has([data-testid="stHeader"]:not(:empty)) .block-container { padding-top: 4.75rem; }
 h1, h2, h3, h4 { letter-spacing: -0.01em; }
 h3 { font-size: 1.45rem !important; padding-top: 0.6rem !important; }
 h4 { font-size: 1.15rem !important; }
