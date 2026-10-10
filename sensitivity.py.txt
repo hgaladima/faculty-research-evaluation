@@ -1,0 +1,93 @@
+"""Sensitivity and fairness analyses for the research evaluation algorithm."""
+import copy
+from research_eval import CONFIG, evaluate
+from scenarios import SCENARIOS, A
+
+SHORT = {"Exceeds Expectations": "E", "Meets Expectations": "M", "Does Not Meet Expectations": "D"}
+
+
+def run(cfg, scen=SCENARIOS):
+    return [evaluate(s, cfg) for s in scen]
+
+
+def variant(**changes):
+    c = copy.deepcopy(CONFIG)
+    for k, v in changes.items():
+        c[k] = v
+    return c
+
+
+base = run(CONFIG)
+
+
+def compare(label, cfg):
+    res = run(cfg)
+    changed = [(b["name"].split()[0], SHORT[b["class"]], SHORT[r["class"]], b["total"], r["total"])
+               for b, r in zip(base, res) if b["class"] != r["class"]]
+    ex = sum(r["class"].startswith("Exceeds") for r in res)
+    me = sum(r["class"].startswith("Meets") for r in res)
+    dn = sum(r["class"].startswith("Does") for r in res)
+    print(f"{label:48s} E/M/D={ex}/{me}/{dn}  changed={len(changed)}  " +
+          "; ".join(f"{n} {a}->{b} ({x}->{y})" for n, a, b, x, y in changed))
+
+
+print("BASELINE class counts:", {k: sum(SHORT[r['class']] == k for r in base) for k in "EMD"})
+print("\n== Weights ==")
+compare("Publications 60 / Grants 25 / Presentations 15", variant(weights={"P": 60, "G": 25, "R": 15}))
+compare("Publications 45 / Grants 40 / Presentations 15", variant(weights={"P": 45, "G": 40, "R": 15}))
+compare("Publications 40 / Grants 40 / Presentations 20", variant(weights={"P": 40, "G": 40, "R": 20}))
+compare("Publications 50 / Grants 30 / Presentations 20", variant(weights={"P": 50, "G": 30, "R": 20}))
+
+print("\n== Exceeds rule / threshold ==")
+compare("Score >= 85 only (no distinction path)", variant(exceeds_rule="total"))
+compare("Score >= 90 only (prompt's illustrative band)", variant(exceeds_rule="total", exceeds_threshold=90.0))
+compare("Score >= 90 or distinction", variant(exceeds_threshold=90.0))
+compare("Score >= 85 + breadth (2 domains >= 80%)", variant(exceeds_rule="breadth"))
+compare("Score >= 80 or distinction", variant(exceeds_threshold=80.0))
+
+print("\n== Anchor share ==")
+for a in (0.6, 0.8):
+    compare(f"Anchor share {a}", variant(anchor_share=a))
+
+print("\n== Quality multipliers ==")
+compare("Flat journal tiers (1.0/1.0/1.0)", variant(journal_tier_mult={1: 1.0, 2: 1.0, 3: 1.0, 0: 0.0}))
+compare("Steep journal tiers (2.0/1.5/1.0)", variant(journal_tier_mult={1: 2.0, 2: 1.5, 3: 1.0, 0: 0.0}))
+compare("Coauthor multiplier 0.5", variant(author_role_mult={"lead": 1.0, "coauthor": 0.5}))
+compare("Coauthor multiplier 0.85", variant(author_role_mult={"lead": 1.0, "coauthor": 0.85}))
+compare("Saturation 3 units (easier excellence)", variant(saturation={"P": 3.0, "G": 3.0, "R": 3.0}))
+compare("Saturation 6 units (harder excellence)", variant(saturation={"P": 6.0, "G": 6.0, "R": 6.0}))
+compare("Grant gate requires external proposal", variant(grant_gate_requires_external=True))
+
+print("\n== Marginal effects (baseline config) ==")
+d_pub, d_grant, d_sub = [], [], []
+for s, b in zip(SCENARIOS, base):
+    s1 = copy.deepcopy(s); s1.setdefault("publications", []); s1["publications"] = s1["publications"] + [A(2)]
+    s2 = copy.deepcopy(s); s2["awards"] = s2.get("awards", []) + [{"size": "major", "role": "PI"}]
+    s3 = copy.deepcopy(s); s3["submissions"] = s3.get("submissions", []) + [{"size": "major", "role": "PI"}]
+    r1, r2, r3 = evaluate(s1), evaluate(s2), evaluate(s3)
+    d_pub.append((b["name"].split()[0], round(r1["total"] - b["total"], 1), SHORT[b["class"]], SHORT[r1["class"]]))
+    d_grant.append((b["name"].split()[0], round(r2["total"] - b["total"], 1), SHORT[b["class"]], SHORT[r2["class"]]))
+    d_sub.append((b["name"].split()[0], round(r3["total"] - b["total"], 1)))
+print("+1 Tier-2 lead article:", d_pub)
+print("+1 major competitive award as PI:", d_grant)
+print("+1 unfunded major PI submission:", d_sub)
+
+print("\n== Targeted questions ==")
+def show(label, fac):
+    r = evaluate(fac)
+    print(f"{label:58s} P={r['P']:5} G={r['G']:5} R={r['R']:5} T={r['total']:5} {SHORT[r['class']]}")
+
+min_g = [{"size": "major", "role": "Co-I"}]
+min_r = [{"type": "poster", "venue": "B"}]
+show("Quantity alone: 6 Tier-3 coauthored articles", {"publications": [A(3, "coauthor")] * 6, "submissions": min_g, "presentations": min_r})
+show("Quantity alone: 8 Tier-3 lead articles", {"publications": [A(3)] * 8, "submissions": min_g, "presentations": min_r})
+show("Quality: 2 Tier-1 lead articles", {"publications": [A(1)] * 2, "submissions": min_g, "presentations": min_r})
+show("Quality: 4 Tier-3 lead articles", {"publications": [A(3)] * 4, "submissions": min_g, "presentations": min_r})
+show("Quality: 4 Tier-1 lead articles", {"publications": [A(1)] * 4, "submissions": min_g, "presentations": min_r})
+show("Prestige: 1 Tier-1 lead + 2 documented impacts", {"publications": [A(1, documented_impacts=2)], "submissions": min_g, "presentations": min_r})
+show("Prestige: 1 Tier-1 lead + 1 Tier-3 coauthor", {"publications": [A(1), A(3, "coauthor")], "submissions": min_g, "presentations": min_r})
+show("Low-funding field: 2 PI major submissions, both scored", {"publications": [A(3)] * 2, "submissions": [{"size": "major", "role": "PI", "scored": True}] * 2, "presentations": min_r})
+show("High-funding field: Co-I on one large award", {"publications": [A(3)] * 2, "awards": [{"size": "large", "role": "Co-I"}], "presentations": min_r})
+show("$50K competitive award as PI", {"publications": [A(3)] * 2, "awards": [{"size": "major", "role": "PI"}], "presentations": min_r})
+show("Collaborator on $2M award", {"publications": [A(3)] * 2, "awards": [{"size": "large", "role": "collaborator"}], "presentations": min_r})
+show("Meets without a grant: 3 unfunded PI submissions", {"publications": [A(3)] * 2, "submissions": [{"size": "major", "role": "PI"}] * 3, "presentations": min_r})

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Saved evaluations, the active policy and its change log: personnel data, stays local
+faculty_research_webapp/data/
+
+.dashboard/
+.playwright-mcp/
+.claude/settings.local.json

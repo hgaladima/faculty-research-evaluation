@@ -1,0 +1,385 @@
+"""
+Faculty Research & Scholarship Evaluation Algorithm -- reference implementation.
+
+Anchor-and-excellence model:
+  * Each required domain (Publications, Grants, Presentations) has a minimum-expectation
+    "gate". Meeting the gate earns the domain's ANCHOR (70% of its maximum).
+  * Quality-weighted scholarly "units" above the domain benchmark earn EXCELLENCE points
+    (the remaining 30%), rising linearly to a saturation cap.
+  * A faculty member who meets every gate therefore scores exactly >= 70 (Meets).
+  * Classification uses both the score and the gates, so excellence in one domain cannot
+    mask an unmet minimum in another.
+
+All unit values, weights and thresholds live in CONFIG and are PROPOSALS that require
+committee approval. Same inputs -> same outputs.
+"""
+from __future__ import annotations
+import math
+
+# ----------------------------------------------------------------------------------------
+# CONFIGURATION (every number here is a proposal, not established policy)
+# ----------------------------------------------------------------------------------------
+CONFIG = {
+    "weights": {"P": 50.0, "G": 35.0, "R": 15.0},     # Publications, Grants, pResentations
+    "anchor_share": 0.70,                              # share of domain max earned at the gate
+    "saturation": {"P": 4.0, "G": 4.0, "R": 4.0},      # excess units for full excellence credit
+    "benchmark_units": {"P": 2.0, "G": 1.0, "R": 1.0}, # units that represent "the minimum"
+    "pub_min_count": 2,                                # stated School expectation (per year)
+    "exceeds_threshold": 85.0,
+    "meets_threshold": 70.0,
+    # Exceeds rule: "total" = score only; "breadth" = also >=2 domains at >= breadth_level;
+    # "total_or_distinction" = score OR a new competitive large external award as PI/MPI.
+    "exceeds_rule": "total_or_distinction",
+    "breadth_level": 0.80,
+    "standard_research_effort": 40.0,                  # % effort assumed by School workload policy (placeholder)
+    "grant_gate_requires_external": False,
+    # ---- Publications ----
+    "journal_tier_mult": {1: 1.50, 2: 1.25, 3: 1.00, 0: 0.0},
+    "author_role_mult": {"lead": 1.00, "coauthor": 0.70},
+    "student_mentee_increment": 0.25,
+    "book_units": 3.0, "chapter_units": 0.75,
+    "other_output_units": {"edited_book": 1.0, "technical_report": 0.5, "policy_brief": 0.5,
+                           "software": 0.75, "dataset": 0.75, "editorial": 0.4,
+                           "book_review": 0.2, "non_peer_reviewed_article": 0.4},
+    "other_output_cap": 2.0,
+    "editorial_units": {"editor": 1.0, "associate_editor": 0.75, "guest_editor": 0.5,
+                        "editorial_board": 0.5, "manuscript_review": 0.1},
+    "editorial_cap": 1.0,
+    "impact_units": 0.5, "impact_cap": 1.0,
+    # ---- Grants ----
+    "submission_base": {"internal": 0.4, "minor": 0.5, "major": 1.0, "large": 1.5},
+    "award_base": {"internal": 0.75, "minor": 1.0, "major": 2.0, "large": 3.0},
+    "grant_role_mult": {"PI": 1.0, "MPI": 1.0, "Co-PI": 0.8, "Co-I": 0.5,
+                        "collaborator": 0.25, "consultant": 0.25},
+    "noncompetitive_mult": 0.5,          # submissions
+    "noncompetitive_award_mult": 0.75,   # contracts / sole-source awards
+    "scored_bonus": 0.25,
+    "submission_cap": 2.5,               # unfunded proposals alone cannot saturate the domain
+    "implementation_units": 0.5, "implementation_cap": 1.0,
+    "grant_review_units": {"federal_panel": 0.75, "other_panel": 0.4}, "grant_review_cap": 0.75,
+    "development_units": 0.25, "development_cap": 0.75,  # documented unsubmitted proposals + unfunded projects
+    # ---- Presentations ----
+    "pres_type_base": {"keynote": 2.0, "plenary": 2.0, "invited": 1.25, "oral": 1.0,
+                       "panel": 0.75, "workshop": 0.75, "poster": 0.6,
+                       "institutional": 0.3, "outreach": 0.3, "seminar": 0.2},
+    "venue_tier_mult": {"A": 1.25, "B": 1.0, "C": 0.6, "0": 0.0},
+    "pres_role_mult": {"presenter": 1.0, "mentor": 0.5, "coauthor": 0.4},
+    "chair_units": 0.3, "chair_cap": 0.6,
+    "local_cap": 1.0,   # institutional + outreach + seminar combined
+}
+
+GATE_TYPES_PRES = {"keynote", "plenary", "invited", "oral", "panel", "workshop", "poster"}
+LOCAL_TYPES_PRES = {"institutional", "outreach", "seminar"}
+SUBSTANTIVE_ROLES = {"PI", "MPI", "Co-PI", "Co-I"}
+
+
+# ----------------------------------------------------------------------------------------
+# Adjustment factor
+# ----------------------------------------------------------------------------------------
+def adjustment_factor(f: dict, cfg: dict) -> float:
+    """f = (assigned research effort / standard) x (months active / 12), bounded 0.25-1.5."""
+    effort = f.get("research_effort", cfg["standard_research_effort"])
+    months = f.get("months_active", 12)
+    raw = (effort / cfg["standard_research_effort"]) * (months / 12.0)
+    return max(0.25, min(1.5, raw))
+
+
+def pub_benchmark_count(fac: float, first_year: bool, cfg: dict) -> int:
+    b = cfg["pub_min_count"] * fac * (0.5 if first_year else 1.0)
+    return max(1, math.floor(b + 0.5))
+
+
+# ----------------------------------------------------------------------------------------
+# Domain unit calculators
+# ----------------------------------------------------------------------------------------
+def pub_units(fac: dict, cfg: dict):
+    count, units, other, editorial, impact, chapters_counted = 0, 0.0, 0.0, 0.0, 0.0, 0
+    flags = []
+    for it in fac.get("publications", []):
+        t = it.get("type", "article")
+        if t == "article":
+            if not it.get("peer_reviewed", True):
+                other += cfg["other_output_units"]["non_peer_reviewed_article"]
+                continue
+            tier = it.get("tier")
+            if tier is None:
+                tier = 3
+                flags.append("Journal tier missing: defaulted to Tier 3 pending verification")
+            if tier == 0:
+                    continue
+            role = it.get("role", "coauthor")
+            u = cfg["journal_tier_mult"][tier] * cfg["author_role_mult"][role]
+            if it.get("student_first") and role == "lead":
+                u += cfg["student_mentee_increment"]
+            units += u
+            count += 1
+        elif t == "book" and it.get("peer_reviewed", True):
+            units += cfg["book_units"] * (1.0 if it.get("role", "lead") == "lead" else 0.7)
+            count += 2
+        elif t == "chapter" and it.get("peer_reviewed", True):
+            units += cfg["chapter_units"]
+            if chapters_counted < 1:
+                count += 1
+                chapters_counted += 1
+        else:
+            other += cfg["other_output_units"].get(t, 0.0)
+        impact += cfg["impact_units"] * it.get("documented_impacts", 0)
+    for e in fac.get("editorial", []):
+        editorial += cfg["editorial_units"][e["role"]] * e.get("n", 1)
+    n0 = sum(1 for it in fac.get("publications", []) if it.get("type", "article") == "article" and it.get("tier") == 0)
+    if n0 >= 3:
+        flags.append(f"Committee review: {n0} articles in questionable venues (pattern, not credited)")
+    other_c = min(other, cfg["other_output_cap"])
+    edit_c = min(editorial, cfg["editorial_cap"])
+    impact_c = min(impact, cfg["impact_cap"])
+    total = units + other_c + edit_c + impact_c
+    return {"count": count, "article_units": units, "other": other_c, "editorial": edit_c,
+            "impact": impact_c, "units": total, "flags": flags}
+
+
+def grant_units(fac: dict, cfg: dict):
+    sub_units, units, gate, partial, flags = 0.0, 0.0, False, False, []
+    distinction = False
+    seen = set()
+    for s in fac.get("submissions", []):
+        key = s.get("id")
+        if key and key in seen:
+            flags.append(f"Duplicate submission id {key}: counted once")
+            continue
+        seen.add(key)
+        role = s.get("role", "collaborator")
+        base = cfg["submission_base"][s["size"]]
+        mult = cfg["grant_role_mult"][role]
+        comp = s.get("competitive", True)
+        u = base * mult * (1.0 if comp else cfg["noncompetitive_mult"])
+        if s.get("scored"):
+            u += cfg["scored_bonus"] * mult
+        sub_units += u
+        external = s["size"] != "internal"
+        if role in SUBSTANTIVE_ROLES and comp and (external or not cfg["grant_gate_requires_external"]):
+            gate = True
+        else:
+            partial = True
+    for a in fac.get("awards", []):
+        if a.get("counted_in_prior_year"):
+            flags.append(f"Award {a.get('id','?')} already credited in a prior year: excluded")
+            continue
+        role = a.get("role", "collaborator")
+        u = cfg["award_base"][a["size"]] * cfg["grant_role_mult"][role]
+        if not a.get("competitive", True):
+            u *= cfg["noncompetitive_award_mult"]
+        units += u
+        gate = True   # any named role on a funded award demonstrates active funding engagement
+        if a["size"] == "large" and role in ("PI", "MPI") and a.get("competitive", True):
+            distinction = True
+    if sub_units > cfg["submission_cap"]:
+        flags.append(f"Submission credit capped at {cfg['submission_cap']} units")
+    units += min(sub_units, cfg["submission_cap"])
+    impl = 0.0
+    for p in fac.get("active_projects", []):
+        if p.get("role") in SUBSTANTIVE_ROLES:
+            impl += cfg["implementation_units"]
+            gate = True   # managing an active funded project satisfies "active engagement"
+    impl = min(impl, cfg["implementation_cap"])
+    review = sum(cfg["grant_review_units"][r] for r in fac.get("grant_reviews", []))
+    review = min(review, cfg["grant_review_cap"])
+    dev = cfg["development_units"] * (fac.get("proposals_in_development", 0) + fac.get("unfunded_projects", 0))
+    dev = min(dev, cfg["development_cap"])
+    if fac.get("proposals_in_development", 0) > 0 or review > 0:
+        partial = True
+    total = units + impl + review + dev
+    return {"units": total, "core": units, "implementation": impl, "review": review,
+            "development": dev, "gate": gate, "distinction": distinction, "partial": partial and not gate, "flags": flags}
+
+
+def pres_units(fac: dict, cfg: dict):
+    units, local, chair, gate, partial, flags = 0.0, 0.0, 0.0, False, False, []
+    for p in fac.get("presentations", []):
+        t = p["type"]
+        base = cfg["pres_type_base"][t]
+        role = cfg["pres_role_mult"][p.get("role", "presenter")]
+        if t in LOCAL_TYPES_PRES:
+            local += base * role
+            partial = True
+            continue
+        venue = p.get("venue", "B")
+        if venue == "0":
+            flags.append("Presentation at a venue classified questionable: not credited")
+            continue
+        units += base * cfg["venue_tier_mult"][venue] * role
+        if t in GATE_TYPES_PRES:
+            gate = True
+    chair = min(cfg["chair_units"] * fac.get("sessions_chaired", 0), cfg["chair_cap"])
+    total = units + min(local, cfg["local_cap"]) + chair
+    return {"units": total, "gate": gate, "partial": partial and not gate, "flags": flags}
+
+
+# ----------------------------------------------------------------------------------------
+# Domain score
+# ----------------------------------------------------------------------------------------
+def domain_score(weight, anchor_fraction, units, benchmark_units, saturation, cfg):
+    anchor = cfg["anchor_share"] * weight * anchor_fraction
+    excess = max(0.0, units - benchmark_units)
+    excel = (1 - cfg["anchor_share"]) * weight * min(1.0, excess / saturation)
+    return anchor + excel, anchor, excel
+
+
+# ----------------------------------------------------------------------------------------
+# Main evaluation
+# ----------------------------------------------------------------------------------------
+def evaluate(fac: dict, cfg: dict = CONFIG) -> dict:
+    W = cfg["weights"]
+    fct = adjustment_factor(fac, cfg)
+    first_year = fac.get("first_year", False)
+    sat_scale = max(fct, 0.5)
+    flags, notes = [], []
+
+    # ---------- Publications ----------
+    pu = pub_units(fac, cfg)
+    flags += pu["flags"]
+    B_count = pub_benchmark_count(fct, first_year, cfg)
+    B_units = cfg["benchmark_units"]["P"] * B_count / cfg["pub_min_count"]
+    pub_gate_annual = pu["count"] >= B_count
+    roll = fac.get("rolling", {})
+    pub_gate_roll = False
+    if not pub_gate_annual and roll.get("pubs_prior2") is not None:
+        three = pu["count"] + roll["pubs_prior2"]
+        if three >= 3 * B_count and fac.get("manuscripts_under_review", 0) >= 1:
+            pub_gate_roll = True
+            notes.append(f"Publication minimum met on the 3-year rolling window ({three} articles) with manuscripts under review")
+    pub_frac = 1.0 if (pub_gate_annual or pub_gate_roll) else min(1.0, pu["count"] / B_count)
+    P, P_anc, P_exc = domain_score(W["P"], pub_frac, pu["units"], B_units,
+                                   cfg["saturation"]["P"] * sat_scale, cfg)
+    pub_gate = pub_gate_annual or pub_gate_roll
+
+    # ---------- Grants ----------
+    gu = grant_units(fac, cfg)
+    flags += gu["flags"]
+    waived = fct < 0.5
+    grant_gate = gu["gate"] or waived
+    if not grant_gate and fct <= 0.5 and gu["partial"]:
+        grant_gate = True
+        notes.append("Reduced research assignment: grant minimum met by documented grant engagement")
+    if first_year and not gu["gate"] and (fac.get("proposals_in_development", 0) > 0):
+        grant_gate = True
+        notes.append("First-year faculty: grant minimum met by documented proposal development")
+    if not grant_gate and roll.get("grant_active_years_prior2") is not None:
+        if roll["grant_active_years_prior2"] >= 2 and fac.get("proposals_in_development", 0) >= 1:
+            grant_gate = True
+            notes.append("Grant minimum met on the 3-year rolling window with a proposal in development")
+    g_frac = 1.0 if grant_gate else (0.5 if gu["partial"] else 0.0)
+    G, G_anc, G_exc = domain_score(W["G"], g_frac, gu["units"], cfg["benchmark_units"]["G"],
+                                   cfg["saturation"]["G"] * sat_scale, cfg)
+
+    # ---------- Presentations ----------
+    ru = pres_units(fac, cfg)
+    flags += ru["flags"]
+    pres_gate = ru["gate"] or waived
+    if not pres_gate and roll.get("pres_prior2") is not None:
+        if roll["pres_prior2"] >= 2 and fac.get("abstracts_submitted", 0) >= 1:
+            pres_gate = True
+            notes.append("Presentation minimum met on the 3-year rolling window with an abstract submitted")
+    r_frac = 1.0 if pres_gate else (0.5 if ru["partial"] else 0.0)
+    R, R_anc, R_exc = domain_score(W["R"], r_frac, ru["units"], cfg["benchmark_units"]["R"],
+                                   cfg["saturation"]["R"] * sat_scale, cfg)
+
+    total = round(P + G + R, 1)
+    gates = {"P": pub_gate, "G": grant_gate, "R": pres_gate}
+    shares = {"P": P / W["P"], "G": G / W["G"], "R": R / W["R"]}
+
+    # ---------- Classification ----------
+    if all(gates.values()):
+        rule = cfg["exceeds_rule"]
+        exceeds = total >= cfg["exceeds_threshold"]
+        if rule == "breadth":
+            exceeds = exceeds and sum(v >= cfg["breadth_level"] for v in shares.values()) >= 2
+        elif rule == "total_or_distinction":
+            exceeds = exceeds or gu["distinction"]
+        cls = "Exceeds Expectations" if exceeds else "Meets Expectations"
+    else:
+        cls = "Does Not Meet Expectations"
+        if total >= cfg["meets_threshold"]:
+            flags.append("Committee review: score >= 70 but a required minimum is unmet")
+        elif any(shares[k] >= 0.9 for k in shares):
+            flags.append("Committee review: distinguished performance in one domain with a required minimum unmet")
+    if first_year:
+        notes.append(f"First-year faculty: publication benchmark {B_count}")
+    elif fct < 1.0:
+        notes.append(f"Expectations prorated (adjustment factor {fct:.2f}; publication benchmark {B_count})")
+    if fct > 1.0:
+        notes.append(f"Expectations scaled up for research-intensive assignment (factor {fct:.2f}; publication benchmark {B_count})")
+
+    return {
+        "name": fac.get("name", ""),
+        "P": round(P, 1), "G": round(G, 1), "R": round(R, 1), "total": total,
+        "class": cls, "gates": gates, "factor": round(fct, 2), "pub_benchmark": B_count,
+        "pub_count": pu["count"], "units": {"P": round(pu["units"], 2), "G": round(gu["units"], 2), "R": round(ru["units"], 2)},
+        "flags": flags, "notes": notes,
+    }
+
+
+# ----------------------------------------------------------------------------------------
+# Validation checks (run before scoring)
+# ----------------------------------------------------------------------------------------
+def validate(fac: dict, cfg: dict = CONFIG) -> list[str]:
+    errs = []
+    ids = [p.get("doi") for p in fac.get("publications", []) if p.get("doi")]
+    if len(ids) != len(set(ids)):
+        errs.append("Duplicate DOI in publications")
+    for p in fac.get("publications", []):
+        if p.get("tier") not in (None, 0, 1, 2, 3):
+            errs.append(f"Invalid journal tier {p.get('tier')}")
+        if p.get("role") not in (None, "lead", "coauthor"):
+            errs.append(f"Invalid author role {p.get('role')}")
+    for s in fac.get("submissions", []) + fac.get("awards", []):
+        if s.get("size") not in cfg["submission_base"]:
+            errs.append(f"Invalid grant size band {s.get('size')}")
+        if s.get("role") not in cfg["grant_role_mult"]:
+            errs.append(f"Invalid grant role {s.get('role')}")
+        amt = s.get("amount")
+        if amt is not None:
+            band = "minor" if amt < 10_000 else "major" if amt < 250_000 else "large"
+            if s["size"] != "internal" and s["size"] != band:
+                errs.append(f"Amount ${amt:,} inconsistent with size band '{s['size']}'")
+    for p in fac.get("presentations", []):
+        if p.get("type") not in cfg["pres_type_base"]:
+            errs.append(f"Invalid presentation type {p.get('type')}")
+    if not 0 <= fac.get("research_effort", 40) <= 100:
+        errs.append("Research effort must be 0-100%")
+    if not 0 <= fac.get("months_active", 12) <= 12:
+        errs.append("Months active must be 0-12")
+    return errs
+
+
+def report(res: dict, cfg: dict = CONFIG) -> str:
+    W = cfg["weights"]
+    lines = [f"Faculty research evaluation: {res['name']}",
+             f"| Component | Score |", "|---|---:|",
+             f"| Publications | {res['P']}/{W['P']:.0f} |",
+             f"| Grants and contracts | {res['G']}/{W['G']:.0f} |",
+             f"| Presentations | {res['R']}/{W['R']:.0f} |",
+             f"| Overall research score | {res['total']}/100 |",
+             f"| Research evaluation | {res['class']} |"]
+    met = [k for k, v in res["gates"].items() if v]
+    names = {"P": "Publications", "G": "Grants", "R": "Presentations"}
+    lines.append("Minimums met: " + (", ".join(names[k] for k in met) or "none"))
+    shares = {"P": res["P"] / W["P"], "G": res["G"] / W["G"], "R": res["R"] / W["R"]}
+    exc = [names[k] for k in shares if shares[k] >= 0.85]
+    if exc:
+        lines.append("Exceeded expectations in: " + ", ".join(exc))
+    unmet = [names[k] for k, v in res["gates"].items() if not v]
+    if unmet:
+        lines.append("Needs improvement: " + ", ".join(unmet))
+    for n in res["notes"] + res["flags"]:
+        lines.append("- " + n)
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    from scenarios import SCENARIOS
+    for fac in SCENARIOS:
+        problems = validate(fac)
+        if problems:
+            print("VALIDATION:", problems)
+        print(report(evaluate(fac)))
+        print()
